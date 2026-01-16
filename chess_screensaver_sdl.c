@@ -261,7 +261,7 @@ SDL_Texture *get_piece_texture(char piece) {
     char letter = tolower(piece);
     const char *color = isupper(piece) ? "lt" : "dt";
     char path[64];
-    snprintf(path, sizeof(path), "pieces/Chess_%c%s60.png", letter, color);  // Changed to 60.png
+    snprintf(path, sizeof(path), "pieces/Chess_%c%s.png", letter, color);
 
     SDL_Texture *tex = IMG_LoadTexture(renderer, path);
     if (!tex) {
@@ -934,6 +934,44 @@ int parse_tag_value(const char *line, const char *tag, char *out, size_t out_siz
     return 1;
 }
 
+void set_last_name(char *out, size_t out_size, const char *full) {
+    if (!out || out_size == 0) return;
+    out[0] = '\0';
+    if (!full) return;
+
+    const char *start = full;
+    while (isspace((unsigned char)*start)) start++;
+    if (*start == '\0') return;
+
+    const char *comma = strchr(start, ',');
+    const char *name_start = start;
+    const char *name_end = NULL;
+
+    if (comma) {
+        name_end = comma;
+        while (name_end > name_start && isspace((unsigned char)name_end[-1])) {
+            name_end--;
+        }
+    } else {
+        const char *p = start;
+        const char *last_word = start;
+        while (*p) {
+            while (isspace((unsigned char)*p)) p++;
+            if (*p == '\0') break;
+            last_word = p;
+            while (*p && !isspace((unsigned char)*p)) p++;
+        }
+        name_start = last_word;
+        name_end = name_start;
+        while (*name_end && !isspace((unsigned char)*name_end)) name_end++;
+    }
+
+    size_t len = (size_t)(name_end - name_start);
+    if (len >= out_size) len = out_size - 1;
+    memcpy(out, name_start, len);
+    out[len] = '\0';
+}
+
 int push_game(Game **games, int *count, int *cap, const char *move_buffer,
               const char *white, const char *black, const char *result) {
     if (*count >= *cap) {
@@ -1287,10 +1325,16 @@ int main(int argc, char *argv[]) {
         }
 
         int game_index = rand() % game_count;
-        strncpy(current_white_name, games[game_index].white, NAME_LEN - 1);
-        current_white_name[NAME_LEN - 1] = '\0';
-        strncpy(current_black_name, games[game_index].black, NAME_LEN - 1);
-        current_black_name[NAME_LEN - 1] = '\0';
+        set_last_name(current_white_name, sizeof(current_white_name), games[game_index].white);
+        if (current_white_name[0] == '\0') {
+            strncpy(current_white_name, games[game_index].white, NAME_LEN - 1);
+            current_white_name[NAME_LEN - 1] = '\0';
+        }
+        set_last_name(current_black_name, sizeof(current_black_name), games[game_index].black);
+        if (current_black_name[0] == '\0') {
+            strncpy(current_black_name, games[game_index].black, NAME_LEN - 1);
+            current_black_name[NAME_LEN - 1] = '\0';
+        }
         view_from_white = (rand() % 2) ? 1 : 0;
         quit = play_game(games[game_index].moves, games[game_index].result);
         free_games(games, game_count);
