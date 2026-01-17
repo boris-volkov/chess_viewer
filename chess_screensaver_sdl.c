@@ -312,7 +312,7 @@ void render_board(const BoardView *view, const Overlay *overlay) {
     SDL_RenderClear(renderer);
 
     SDL_Color light = {210, 210, 210, 255};
-    SDL_Color dark  = {90,  90,  90, 255};
+    SDL_Color dark  = {150,  150,  150, 255};
     if (dim_board) {
         light.r = (Uint8)(light.r * 2 / 3);
         light.g = (Uint8)(light.g * 2 / 3);
