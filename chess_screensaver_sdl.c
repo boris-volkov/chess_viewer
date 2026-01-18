@@ -25,6 +25,7 @@
 #define MOVE_DELAY_MS 5000
 #define MOVE_ANIM_MS 300
 #define NAME_LEN 128
+#define YEAR_LEN 5
 #define RESULT_LEN 16
 #define GAME_OVER_PAUSE_MS 10000
 #define KING_FLIP_MS 800
@@ -43,6 +44,7 @@ SDL_Renderer *renderer = NULL;
 SDL_Texture *piece_textures[256] = {NULL};
 char current_white_name[NAME_LEN] = "White";
 char current_black_name[NAME_LEN] = "Black";
+char current_game_year[YEAR_LEN] = "";
 int show_loser_king = 0;
 int loser_is_white = 0;
 float loser_king_angle = 180.0f;
@@ -71,6 +73,10 @@ typedef struct {
 
 int is_in_check(int is_white);
 void board_to_screen(const BoardView *view, int board_r, int board_f, int *out_x, int *out_y);
+
+static int is_white_piece(char piece) {
+    return (piece >= 'A' && piece <= 'Z');
+}
 
 int find_king_pos(char king, int *out_r, int *out_f) {
     for (int r = 0; r < BOARD_SIZE; r++) {
@@ -174,6 +180,28 @@ void draw_color_swatch(int x, int y, int size, SDL_Color fill, SDL_Color outline
     SDL_RenderFillRect(renderer, &rect);
     SDL_SetRenderDrawColor(renderer, outline.r, outline.g, outline.b, outline.a);
     SDL_RenderDrawRect(renderer, &rect);
+}
+
+void render_year_label(const BoardView *view) {
+    if (current_game_year[0] == '\0') return;
+
+    int scale = (view->square >= 60) ? 3 : 2;
+    int margin = (view->square >= 60) ? 16 : 8;
+    int text_w = text_width_px(current_game_year, scale);
+    int text_h = 7 * scale;
+
+    int x = view->offset_x + margin;
+    int y = view->offset_y + margin;
+    if (view->offset_y >= text_h + 2 * margin) {
+        y = view->offset_y - margin - text_h;
+        x = view->offset_x + margin;
+    } else if (view->offset_x >= text_w + 2 * margin) {
+        x = view->offset_x - margin - text_w;
+        y = view->offset_y + margin;
+    }
+
+    SDL_Color text_color = {255, 255, 255, 255};
+    draw_text(x, y, scale, current_game_year, text_color);
 }
 
 void render_player_labels(const BoardView *view) {
@@ -405,6 +433,7 @@ void render_board(const BoardView *view, const Overlay *overlay) {
         }
     }
 
+    render_year_label(view);
     render_player_labels(view);
 
     SDL_RenderPresent(renderer);
@@ -435,7 +464,7 @@ int is_valid_move(char piece, int from_r, int from_f, int to_r, int to_f, int is
     int dir = is_white ? -1 : 1;  // row direction (board[0] = rank 8)
     char at_to = board[to_r][to_f];
     int is_empty = (at_to == '.');
-    int is_enemy = !is_empty && (isupper(at_to) != is_white);
+    int is_enemy = !is_empty && (is_white_piece(at_to) != is_white);
 
     int movement_valid = 0;
 
@@ -498,7 +527,7 @@ int is_in_check(int is_white) {
     for (int r = 0; r < BOARD_SIZE; r++) {
         for (int f = 0; f < BOARD_SIZE; f++) {
             char p = board[r][f];
-            if (p == '.' || (isupper(p) != opponent_is_white)) continue;  // Not opponent piece
+            if (p == '.' || (is_white_piece(p) != opponent_is_white)) continue;  // Not opponent piece
             if (is_valid_move(p, r, f, king_r, king_f, opponent_is_white, 1)) {
                 return 1;
             }
@@ -680,6 +709,11 @@ int animate_move(const Move *m, int is_white) {
                 return 1;
             } else if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_SPACE) {
                 pause_buffered = 1;
+            } else if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_f) {
+                view_from_white = !view_from_white;
+                get_board_view(&view);
+                board_to_screen(&view, m->from_r, m->from_f, &start_x, &start_y);
+                board_to_screen(&view, m->to_r, m->to_f, &end_x, &end_y);
             }
         }
 
@@ -821,6 +855,7 @@ typedef struct {
     char *moves;
     char white[NAME_LEN];
     char black[NAME_LEN];
+    char year[YEAR_LEN];
     char result[RESULT_LEN];
 } Game;
 
@@ -934,6 +969,18 @@ int parse_tag_value(const char *line, const char *tag, char *out, size_t out_siz
     return 1;
 }
 
+void extract_year(char *out, size_t out_size, const char *date) {
+    if (!out || out_size == 0) return;
+    out[0] = '\0';
+    if (!date || strlen(date) < 4) return;
+    for (int i = 0; i < 4; i++) {
+        if (!isdigit((unsigned char)date[i])) return;
+    }
+    if (out_size < 5) return;
+    memcpy(out, date, 4);
+    out[4] = '\0';
+}
+
 void set_last_name(char *out, size_t out_size, const char *full) {
     if (!out || out_size == 0) return;
     out[0] = '\0';
@@ -973,7 +1020,7 @@ void set_last_name(char *out, size_t out_size, const char *full) {
 }
 
 int push_game(Game **games, int *count, int *cap, const char *move_buffer,
-              const char *white, const char *black, const char *result) {
+              const char *white, const char *black, const char *year, const char *result) {
     if (*count >= *cap) {
         int new_cap = (*cap == 0) ? 16 : (*cap * 2);
         Game *new_games = (Game *)realloc(*games, (size_t)new_cap * sizeof(Game));
@@ -987,6 +1034,8 @@ int push_game(Game **games, int *count, int *cap, const char *move_buffer,
     (*games)[*count].white[NAME_LEN - 1] = '\0';
     strncpy((*games)[*count].black, (black && black[0]) ? black : "Black", NAME_LEN - 1);
     (*games)[*count].black[NAME_LEN - 1] = '\0';
+    strncpy((*games)[*count].year, (year && year[0]) ? year : "", YEAR_LEN - 1);
+    (*games)[*count].year[YEAR_LEN - 1] = '\0';
     strncpy((*games)[*count].result, (result && result[0]) ? result : "", RESULT_LEN - 1);
     (*games)[*count].result[RESULT_LEN - 1] = '\0';
     (*count)++;
@@ -1009,6 +1058,8 @@ int load_games(FILE *fp, Game **out_games) {
     char move_buffer[65536] = {0};
     char current_white[NAME_LEN] = "";
     char current_black[NAME_LEN] = "";
+    char current_date[NAME_LEN] = "";
+    char current_year[YEAR_LEN] = "";
     char current_result[RESULT_LEN] = "";
     int in_game = 0;
 
@@ -1019,11 +1070,13 @@ int load_games(FILE *fp, Game **out_games) {
         if (strncmp(trim, "[Event", 6) == 0) {  // New game starts
             if (in_game && move_buffer[0] != '\0') {
                 if (!push_game(&games, &count, &cap, move_buffer,
-                               current_white, current_black, current_result)) goto error;
+                               current_white, current_black, current_year, current_result)) goto error;
                 move_buffer[0] = '\0';
             }
             current_white[0] = '\0';
             current_black[0] = '\0';
+            current_date[0] = '\0';
+            current_year[0] = '\0';
             current_result[0] = '\0';
             in_game = 1;
             continue;  // Skip header lines
@@ -1031,6 +1084,9 @@ int load_games(FILE *fp, Game **out_games) {
         if (in_game && trim[0] == '[') {
             parse_tag_value(trim, "White", current_white, sizeof(current_white));
             parse_tag_value(trim, "Black", current_black, sizeof(current_black));
+            if (parse_tag_value(trim, "Date", current_date, sizeof(current_date))) {
+                extract_year(current_year, sizeof(current_year), current_date);
+            }
             parse_tag_value(trim, "Result", current_result, sizeof(current_result));
             continue;
         }
@@ -1042,7 +1098,7 @@ int load_games(FILE *fp, Game **out_games) {
 
     if (in_game && move_buffer[0] != '\0') {
         if (!push_game(&games, &count, &cap, move_buffer,
-                       current_white, current_black, current_result)) goto error;
+                       current_white, current_black, current_year, current_result)) goto error;
     }
 
     *out_games = games;
@@ -1101,6 +1157,9 @@ int play_game(const char *move_buffer, const char *header_result) {
                     paused = !paused;
                     dim_board = paused;
                     last_move_tick = SDL_GetTicks();
+                    draw_board();
+                } else if (key == SDLK_f) {
+                    view_from_white = !view_from_white;
                     draw_board();
                 } else if (paused && key == SDLK_LEFT) {
                     if (index > 0) {
@@ -1161,8 +1220,16 @@ int play_game(const char *move_buffer, const char *header_result) {
             for (;;) {
                 SDL_Event e;
                 while (SDL_PollEvent(&e)) {
-                    if (e.type == SDL_QUIT || (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_ESCAPE)) {
+                    if (e.type == SDL_QUIT) {
                         quit = 1;
+                    } else if (e.type == SDL_KEYDOWN) {
+                        SDL_Keycode key = e.key.keysym.sym;
+                        if (key == SDLK_ESCAPE) {
+                            quit = 1;
+                        } else if (key == SDLK_f) {
+                            view_from_white = !view_from_white;
+                            draw_board();
+                        }
                     }
                 }
                 if (quit) break;
@@ -1182,8 +1249,16 @@ int play_game(const char *move_buffer, const char *header_result) {
             for (;;) {
                 SDL_Event e;
                 while (SDL_PollEvent(&e)) {
-                    if (e.type == SDL_QUIT || (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_ESCAPE)) {
+                    if (e.type == SDL_QUIT) {
                         quit = 1;
+                    } else if (e.type == SDL_KEYDOWN) {
+                        SDL_Keycode key = e.key.keysym.sym;
+                        if (key == SDLK_ESCAPE) {
+                            quit = 1;
+                        } else if (key == SDLK_f) {
+                            view_from_white = !view_from_white;
+                            draw_board();
+                        }
                     }
                 }
                 if (quit) break;
@@ -1224,6 +1299,9 @@ int play_game(const char *move_buffer, const char *header_result) {
                     dim_board = 0;
                     draw_board();
                 }
+            } else if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_f) {
+                view_from_white = !view_from_white;
+                draw_board();
             } else if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_LEFT) {
                 if (review_index > 0) {
                     review_index--;
@@ -1278,6 +1356,7 @@ int main(int argc, char *argv[]) {
         SDL_Quit();
         return 1;
     }
+    SDL_ShowCursor(SDL_DISABLE);
 
     srand((unsigned int)time(NULL));
 
@@ -1335,6 +1414,8 @@ int main(int argc, char *argv[]) {
             strncpy(current_black_name, games[game_index].black, NAME_LEN - 1);
             current_black_name[NAME_LEN - 1] = '\0';
         }
+        strncpy(current_game_year, games[game_index].year, YEAR_LEN - 1);
+        current_game_year[YEAR_LEN - 1] = '\0';
         view_from_white = (rand() % 2) ? 1 : 0;
         quit = play_game(games[game_index].moves, games[game_index].result);
         free_games(games, game_count);
