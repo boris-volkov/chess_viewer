@@ -1,7 +1,7 @@
-// chess_screensaver_sdl.c - A minimal PGN chess viewer using SDL2 for graphical display
-// Displays games as a screensaver-like animation with 1-second delays between moves
+// chess_viewer.c - A minimal PGN chess viewer using SDL2 for graphical display
+// Displays games as an animated playback with per-move delays
 // Dependencies: SDL2 and SDL2_image (for loading PNG piece images)
-// Compile (Linux/Mac): gcc chess_screensaver_sdl.c -o chess_screensaver_sdl -lSDL2 -lSDL2_image
+// Compile (Linux/Mac): gcc chess_viewer.c -o chess_viewer -lSDL2 -lSDL2_image
 // Windows: Use a setup like MinGW or Visual Studio with SDL2 libs
 
 #include <stdio.h>
@@ -1348,7 +1348,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    window = SDL_CreateWindow("Chess PGN Screensaver", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+    window = SDL_CreateWindow("Chess Viewer", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
                               SCREEN_SIZE, SCREEN_SIZE, SDL_WINDOW_SHOWN | SDL_WINDOW_FULLSCREEN_DESKTOP);
     renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
     if (!window || !renderer) {

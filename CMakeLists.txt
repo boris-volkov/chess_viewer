@@ -1,0 +1,43 @@
+cmake_minimum_required(VERSION 3.16)
+project(chess_viewer C)
+
+set(CMAKE_C_STANDARD 99)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+
+add_executable(chess_viewer chess_viewer.c)
+
+find_package(SDL2 CONFIG QUIET)
+find_package(SDL2_image CONFIG QUIET)
+
+if (NOT TARGET SDL2::SDL2)
+    find_package(PkgConfig QUIET)
+    if (PkgConfig_FOUND)
+        pkg_check_modules(SDL2 REQUIRED sdl2)
+        add_library(SDL2::SDL2 INTERFACE IMPORTED)
+        target_include_directories(SDL2::SDL2 INTERFACE ${SDL2_INCLUDE_DIRS})
+        target_link_libraries(SDL2::SDL2 INTERFACE ${SDL2_LIBRARIES})
+        target_compile_options(SDL2::SDL2 INTERFACE ${SDL2_CFLAGS_OTHER})
+    endif()
+endif()
+
+if (NOT TARGET SDL2_image::SDL2_image)
+    if (PkgConfig_FOUND)
+        pkg_check_modules(SDL2_IMAGE REQUIRED SDL2_image)
+        add_library(SDL2_image::SDL2_image INTERFACE IMPORTED)
+        target_include_directories(SDL2_image::SDL2_image INTERFACE ${SDL2_IMAGE_INCLUDE_DIRS})
+        target_link_libraries(SDL2_image::SDL2_image INTERFACE ${SDL2_IMAGE_LIBRARIES})
+        target_compile_options(SDL2_image::SDL2_image INTERFACE ${SDL2_IMAGE_CFLAGS_OTHER})
+    endif()
+endif()
+
+if (NOT TARGET SDL2::SDL2)
+    message(FATAL_ERROR "SDL2 not found. Install SDL2 or use vcpkg.")
+endif()
+if (NOT TARGET SDL2_image::SDL2_image)
+    message(FATAL_ERROR "SDL2_image not found. Install SDL2_image or use vcpkg.")
+endif()
+
+target_link_libraries(chess_viewer PRIVATE SDL2::SDL2 SDL2_image::SDL2_image)
+if (TARGET SDL2::SDL2main)
+    target_link_libraries(chess_viewer PRIVATE SDL2::SDL2main)
+endif()
