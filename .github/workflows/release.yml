@@ -28,9 +28,11 @@ jobs:
         run: .\vcpkg\vcpkg.exe install sdl2 sdl2-image --triplet x64-windows
 
       - name: Configure
+        shell: pwsh
         run: cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
+        shell: pwsh
         run: cmake --build build --config Release
 
       - name: Bundle runtime DLLs
