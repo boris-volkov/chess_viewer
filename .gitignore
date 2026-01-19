@@ -58,3 +58,9 @@ dkms.conf
 build/
 build*/
 dist/
+
+# Visual Studio
+.vs/
+
+# VS Code
+.vscode/
