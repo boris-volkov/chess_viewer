@@ -53,6 +53,10 @@ float draw_king_angle = 90.0f;
 int view_from_white = 1;
 int dim_board = 0;
 int pause_buffered = 0;
+int analysis_mode = 0;
+int analysis_saved_dim = 0;
+char analysis_saved_board[BOARD_SIZE][BOARD_SIZE];
+SDL_Cursor *analysis_cursor = NULL;
 
 typedef struct {
     int square;
@@ -73,6 +77,9 @@ typedef struct {
 
 int is_in_check(int is_white);
 void board_to_screen(const BoardView *view, int board_r, int board_f, int *out_x, int *out_y);
+int screen_to_board(const BoardView *view, int x, int y, int *out_r, int *out_f);
+void enter_analysis_mode(void);
+void exit_analysis_mode(void);
 
 static int is_white_piece(char piece) {
     return (piece >= 'A' && piece <= 'Z');
@@ -318,6 +325,38 @@ void board_to_screen(const BoardView *view, int board_r, int board_f, int *out_x
     if (out_y) *out_y = view->offset_y + draw_r * view->square;
 }
 
+int screen_to_board(const BoardView *view, int x, int y, int *out_r, int *out_f) {
+    if (x < view->offset_x || y < view->offset_y) return 0;
+    if (x >= view->offset_x + view->board_px || y >= view->offset_y + view->board_px) return 0;
+    int draw_f = (x - view->offset_x) / view->square;
+    int draw_r = (y - view->offset_y) / view->square;
+    if (draw_r < 0 || draw_r >= BOARD_SIZE || draw_f < 0 || draw_f >= BOARD_SIZE) return 0;
+    if (out_r) *out_r = view_from_white ? draw_r : (BOARD_SIZE - 1 - draw_r);
+    if (out_f) *out_f = view_from_white ? draw_f : (BOARD_SIZE - 1 - draw_f);
+    return 1;
+}
+
+void enter_analysis_mode(void) {
+    if (analysis_mode) return;
+    analysis_mode = 1;
+    memcpy(analysis_saved_board, board, sizeof(board));
+    analysis_saved_dim = dim_board;
+    dim_board = 0;
+    if (!analysis_cursor) {
+        analysis_cursor = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_CROSSHAIR);
+    }
+    if (analysis_cursor) SDL_SetCursor(analysis_cursor);
+    SDL_ShowCursor(SDL_ENABLE);
+}
+
+void exit_analysis_mode(void) {
+    if (!analysis_mode) return;
+    analysis_mode = 0;
+    memcpy(board, analysis_saved_board, sizeof(board));
+    dim_board = analysis_saved_dim;
+    SDL_ShowCursor(SDL_DISABLE);
+}
+
 void get_board_view(BoardView *view) {
     int screen_w = SCREEN_SIZE;
     int screen_h = SCREEN_SIZE;
@@ -339,8 +378,8 @@ void render_board(const BoardView *view, const Overlay *overlay) {
     SDL_SetRenderDrawColor(renderer, 50, 50, 50, 255);
     SDL_RenderClear(renderer);
 
-    SDL_Color light = {210, 210, 210, 255};
-    SDL_Color dark  = {150,  150,  150, 255};
+    SDL_Color light = analysis_mode ? (SDL_Color){215, 210, 200, 255} : (SDL_Color){210, 210, 210, 255};
+    SDL_Color dark  = analysis_mode ? (SDL_Color){155, 150, 140, 255} : (SDL_Color){150, 150, 150, 255};
     if (dim_board) {
         light.r = (Uint8)(light.r * 2 / 3);
         light.g = (Uint8)(light.g * 2 / 3);
@@ -1143,6 +1182,12 @@ int play_game(const char *move_buffer, const char *header_result) {
     show_draw_kings = 0;
     dim_board = 0;
     pause_buffered = 0;
+    int analysis_dragging = 0;
+    char analysis_piece = '.';
+    int analysis_from_r = -1;
+    int analysis_from_f = -1;
+    int analysis_mouse_x = 0;
+    int analysis_mouse_y = 0;
 
     while (!quit) {
         SDL_Event e;
@@ -1153,28 +1198,95 @@ int play_game(const char *move_buffer, const char *header_result) {
                 SDL_Keycode key = e.key.keysym.sym;
                 if (key == SDLK_ESCAPE) {
                     quit = 1;
-                } else if (key == SDLK_SPACE) {
-                    paused = !paused;
-                    dim_board = paused;
-                    last_move_tick = SDL_GetTicks();
+                } else if (key == SDLK_a) {
+                    if (analysis_mode) {
+                        exit_analysis_mode();
+                        analysis_dragging = 0;
+                        analysis_piece = '.';
+                    } else {
+                        enter_analysis_mode();
+                        analysis_dragging = 0;
+                        analysis_piece = '.';
+                    }
                     draw_board();
+                } else if (key == SDLK_SPACE) {
+                    if (!analysis_mode) {
+                        paused = !paused;
+                        dim_board = paused;
+                        last_move_tick = SDL_GetTicks();
+                        draw_board();
+                    }
                 } else if (key == SDLK_f) {
                     view_from_white = !view_from_white;
                     draw_board();
-                } else if (paused && key == SDLK_LEFT) {
+                } else if (!analysis_mode && paused && key == SDLK_LEFT) {
                     if (index > 0) {
                         index--;
                         replay_moves_to_index(moves, move_count, index);
                     }
-                } else if (paused && key == SDLK_RIGHT) {
+                } else if (!analysis_mode && paused && key == SDLK_RIGHT) {
                     if (index < move_count) {
                         index++;
                         replay_moves_to_index(moves, move_count, index);
                     }
                 }
+            } else if (analysis_mode && e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) {
+                BoardView view;
+                get_board_view(&view);
+                int r = -1;
+                int f = -1;
+                if (screen_to_board(&view, e.button.x, e.button.y, &r, &f)) {
+                    if (board[r][f] != '.') {
+                        analysis_dragging = 1;
+                        analysis_piece = board[r][f];
+                        analysis_from_r = r;
+                        analysis_from_f = f;
+                        analysis_mouse_x = e.button.x;
+                        analysis_mouse_y = e.button.y;
+                        board[r][f] = '.';
+                    }
+                }
+            } else if (analysis_mode && e.type == SDL_MOUSEMOTION) {
+                if (analysis_dragging) {
+                    analysis_mouse_x = e.motion.x;
+                    analysis_mouse_y = e.motion.y;
+                }
+            } else if (analysis_mode && e.type == SDL_MOUSEBUTTONUP && e.button.button == SDL_BUTTON_LEFT) {
+                if (analysis_dragging) {
+                    analysis_mouse_x = e.button.x;
+                    analysis_mouse_y = e.button.y;
+                    BoardView view;
+                    get_board_view(&view);
+                    int r = -1;
+                    int f = -1;
+                    if (screen_to_board(&view, analysis_mouse_x, analysis_mouse_y, &r, &f)) {
+                        board[r][f] = analysis_piece;
+                    } else {
+                        board[analysis_from_r][analysis_from_f] = analysis_piece;
+                    }
+                    analysis_dragging = 0;
+                    analysis_piece = '.';
+                }
             }
         }
         if (quit) break;
+
+        if (analysis_mode) {
+            BoardView view;
+            get_board_view(&view);
+            Overlay overlay = {0};
+            if (analysis_dragging) {
+                overlay.active = 1;
+                overlay.piece = analysis_piece;
+                overlay.x = (float)analysis_mouse_x - (float)view.square * 0.5f;
+                overlay.y = (float)analysis_mouse_y - (float)view.square * 0.5f;
+                overlay.skip_r1 = analysis_from_r;
+                overlay.skip_f1 = analysis_from_f;
+            }
+            render_board(&view, analysis_dragging ? &overlay : NULL);
+            SDL_Delay(10);
+            continue;
+        }
 
         if (!paused && index < move_count) {
             Uint32 now = SDL_GetTicks();
@@ -1424,6 +1536,10 @@ int main(int argc, char *argv[]) {
     // Cleanup
     for (int i = 0; i < 256; i++) {
         if (piece_textures[i]) SDL_DestroyTexture(piece_textures[i]);
+    }
+    if (analysis_cursor) {
+        SDL_FreeCursor(analysis_cursor);
+        analysis_cursor = NULL;
     }
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
