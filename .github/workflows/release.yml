@@ -13,23 +13,26 @@ jobs:
   build-windows:
     runs-on: windows-latest
     env:
-      VCPKG_ROOT: ${{ github.workspace }}\vcpkg
+      VCPKG_ROOT: ${{ github.workspace }}/vcpkg
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Clone vcpkg
-        run: git clone https://github.com/microsoft/vcpkg $env:VCPKG_ROOT
+        shell: pwsh
+        run: git clone https://github.com/microsoft/vcpkg "${{ env.VCPKG_ROOT }}"
 
       - name: Bootstrap vcpkg
-        run: .\vcpkg\bootstrap-vcpkg.bat
+        shell: pwsh
+        run: & "${{ env.VCPKG_ROOT }}/bootstrap-vcpkg.bat"
 
       - name: Install dependencies
-        run: .\vcpkg\vcpkg.exe install sdl2 sdl2-image --triplet x64-windows
+        shell: pwsh
+        run: & "${{ env.VCPKG_ROOT }}/vcpkg.exe" install sdl2 sdl2-image --triplet x64-windows
 
       - name: Configure
         shell: pwsh
-        run: cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=${{ env.VCPKG_ROOT }}\scripts\buildsystems\vcpkg.cmake -DCMAKE_BUILD_TYPE=Release
+        run: cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE="${{ env.VCPKG_ROOT }}/scripts/buildsystems/vcpkg.cmake" -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
         shell: pwsh
@@ -38,9 +41,10 @@ jobs:
       - name: Bundle runtime DLLs
         shell: pwsh
         run: |
+          $vcpkgRoot = "${{ env.VCPKG_ROOT }}"
           $exe = "build\Release\chess_viewer.exe"
           if (!(Test-Path $exe)) { $exe = "build\chess_viewer.exe" }
-          & "$env:VCPKG_ROOT\scripts\buildsystems\msbuild\applocal.ps1" -targetBinary $exe -installedDir "$env:VCPKG_ROOT\installed\x64-windows\bin"
+          & "$vcpkgRoot/scripts/buildsystems/msbuild/applocal.ps1" -targetBinary $exe -installedDir "$vcpkgRoot/installed/x64-windows/bin"
 
       - name: Package zip
         shell: pwsh
