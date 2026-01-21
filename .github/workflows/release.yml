@@ -24,11 +24,13 @@ jobs:
 
       - name: Bootstrap vcpkg
         shell: pwsh
-        run: & "${{ env.VCPKG_ROOT }}/bootstrap-vcpkg.bat"
+        run: |
+          & "${{ env.VCPKG_ROOT }}/bootstrap-vcpkg.bat"
 
       - name: Install dependencies
         shell: pwsh
-        run: & "${{ env.VCPKG_ROOT }}/vcpkg.exe" install sdl2 sdl2-image --triplet x64-windows
+        run: |
+          & "${{ env.VCPKG_ROOT }}/vcpkg.exe" install sdl2 sdl2-image --triplet x64-windows
 
       - name: Configure
         shell: pwsh
