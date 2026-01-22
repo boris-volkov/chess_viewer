@@ -61,6 +61,7 @@ int pause_buffered = 0;
 int move_delay_ms = MOVE_DELAY_MS;
 Uint32 speed_message_until = 0;
 int analysis_mode = 0;
+int show_help = 0;
 int analysis_saved_dim = 0;
 int analysis_saved_show_loser_king = 0;
 int analysis_saved_show_draw_kings = 0;
@@ -103,6 +104,7 @@ int update_mark_drag(const BoardView *view, int x, int y);
 void end_mark_drag(void);
 int adjust_move_delay(int delta_ms, Uint32 now);
 void render_speed_label(const BoardView *view);
+void render_help_overlay(const BoardView *view);
 void set_cursor_visible(int visible);
 void note_mouse_activity(Uint32 now);
 void update_cursor_auto_hide(Uint32 now);
@@ -137,6 +139,8 @@ static const Glyph font_glyphs[] = {
     {',', {0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x08}},
     {'\'',{0x04, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00}},
     {'/', {0x01, 0x02, 0x04, 0x08, 0x10, 0x00, 0x00}},
+    {'(', {0x04, 0x08, 0x10, 0x10, 0x10, 0x08, 0x04}},
+    {')', {0x04, 0x02, 0x01, 0x01, 0x01, 0x02, 0x04}},
     {':', {0x00, 0x04, 0x00, 0x00, 0x04, 0x00, 0x00}},
     {'?', {0x0E, 0x11, 0x01, 0x02, 0x04, 0x00, 0x04}},
     {'0', {0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E}},
@@ -282,6 +286,58 @@ void render_speed_label(const BoardView *view) {
 
     SDL_Color text_color = {255, 255, 255, 255};
     draw_text(x, y, scale, buf, text_color);
+}
+
+void render_help_overlay(const BoardView *view) {
+    if (!show_help) return;
+
+    const char *lines[] = {
+        "HELP",
+        "ALL MODES:",
+        "  Q: QUIT",
+        "  ESC: TOGGLE HELP",
+        "  F: FLIP VIEW",
+        "  UP/DOWN: SPEED",
+        "  RIGHT DRAG: MARK SQUARES",
+        "  MIDDLE CLICK: CLEAR MARKS",
+        "PLAYBACK:",
+        "  SPACE: PAUSE/RESUME",
+        "  A: TOGGLE ANALYSIS",
+        "PAUSED (SPACE):",
+        "  LEFT/RIGHT: STEP MOVES",
+        "ANALYSIS (A):",
+        "  LEFT DRAG: MOVE PIECE"
+    };
+    int line_count = (int)(sizeof(lines) / sizeof(lines[0]));
+
+    int scale = (view->square >= 60) ? 3 : 2;
+    int line_gap = (scale >= 3) ? 4 : 3;
+    int text_h = 7 * scale;
+    int max_w = 0;
+    for (int i = 0; i < line_count; i++) {
+        int w = text_width_px(lines[i], scale);
+        if (w > max_w) max_w = w;
+    }
+
+    int total_h = line_count * text_h + (line_count - 1) * line_gap;
+    int pad = (scale >= 3) ? 10 : 8;
+    int box_w = max_w + pad * 2;
+    int box_h = total_h + pad * 2;
+    int x = (view->screen_w - box_w) / 2;
+    int y = (view->screen_h - box_h) / 2;
+
+    SDL_Rect bg = {x, y, box_w, box_h};
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(renderer, 80, 80, 80, 180);
+    SDL_RenderFillRect(renderer, &bg);
+
+    SDL_Color text_color = {255, 255, 255, 255};
+    int text_x = x + pad;
+    int text_y = y + pad;
+    for (int i = 0; i < line_count; i++) {
+        draw_text(text_x, text_y, scale, lines[i], text_color);
+        text_y += text_h + line_gap;
+    }
 }
 
 void render_player_labels(const BoardView *view) {
@@ -703,6 +759,7 @@ void render_board(const BoardView *view, const Overlay *overlay) {
     render_year_label(view);
     render_speed_label(view);
     render_player_labels(view);
+    render_help_overlay(view);
 
     SDL_RenderPresent(renderer);
 }
@@ -976,20 +1033,26 @@ int animate_move(const Move *m, int is_white) {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
             note_mouse_activity_event(&e);
-            if (e.type == SDL_QUIT || (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_ESCAPE)) {
+            if (e.type == SDL_QUIT) {
                 return 1;
-            } else if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_SPACE) {
-                pause_buffered = 1;
-            } else if (e.type == SDL_KEYDOWN &&
-                       (e.key.keysym.sym == SDLK_UP || e.key.keysym.sym == SDLK_DOWN)) {
-                Uint32 now = SDL_GetTicks();
-                int delta = (e.key.keysym.sym == SDLK_UP) ? MOVE_DELAY_STEP_MS : -MOVE_DELAY_STEP_MS;
-                adjust_move_delay(delta, now);
-            } else if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_f) {
-                view_from_white = !view_from_white;
-                get_board_view(&view);
-                board_to_screen(&view, m->from_r, m->from_f, &start_x, &start_y);
-                board_to_screen(&view, m->to_r, m->to_f, &end_x, &end_y);
+            } else if (e.type == SDL_KEYDOWN) {
+                SDL_Keycode key = e.key.keysym.sym;
+                if (key == SDLK_q) {
+                    return 1;
+                } else if (key == SDLK_ESCAPE) {
+                    show_help = !show_help;
+                } else if (key == SDLK_SPACE) {
+                    pause_buffered = 1;
+                } else if (key == SDLK_UP || key == SDLK_DOWN) {
+                    Uint32 now = SDL_GetTicks();
+                    int delta = (key == SDLK_UP) ? MOVE_DELAY_STEP_MS : -MOVE_DELAY_STEP_MS;
+                    adjust_move_delay(delta, now);
+                } else if (key == SDLK_f) {
+                    view_from_white = !view_from_white;
+                    get_board_view(&view);
+                    board_to_screen(&view, m->from_r, m->from_f, &start_x, &start_y);
+                    board_to_screen(&view, m->to_r, m->to_f, &end_x, &end_y);
+                }
             } else if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_MIDDLE) {
                 clear_analysis_marks();
             } else if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_RIGHT) {
@@ -1447,8 +1510,11 @@ int play_game(const char *move_buffer, const char *header_result) {
                 quit = 1;
             } else if (e.type == SDL_KEYDOWN) {
                 SDL_Keycode key = e.key.keysym.sym;
-                if (key == SDLK_ESCAPE) {
+                if (key == SDLK_q) {
                     quit = 1;
+                } else if (key == SDLK_ESCAPE) {
+                    show_help = !show_help;
+                    draw_board();
                 } else if (key == SDLK_UP || key == SDLK_DOWN) {
                     Uint32 now = SDL_GetTicks();
                     int prev = move_delay_ms;
@@ -1626,8 +1692,10 @@ int play_game(const char *move_buffer, const char *header_result) {
                         quit = 1;
                     } else if (e.type == SDL_KEYDOWN) {
                         SDL_Keycode key = e.key.keysym.sym;
-                        if (key == SDLK_ESCAPE) {
+                        if (key == SDLK_q) {
                             quit = 1;
+                        } else if (key == SDLK_ESCAPE) {
+                            show_help = !show_help;
                         } else if (key == SDLK_UP || key == SDLK_DOWN) {
                             Uint32 tick_now = SDL_GetTicks();
                             int delta = (key == SDLK_UP) ? MOVE_DELAY_STEP_MS : -MOVE_DELAY_STEP_MS;
@@ -1664,8 +1732,10 @@ int play_game(const char *move_buffer, const char *header_result) {
                         quit = 1;
                     } else if (e.type == SDL_KEYDOWN) {
                         SDL_Keycode key = e.key.keysym.sym;
-                        if (key == SDLK_ESCAPE) {
+                        if (key == SDLK_q) {
                             quit = 1;
+                        } else if (key == SDLK_ESCAPE) {
+                            show_help = !show_help;
                         } else if (key == SDLK_UP || key == SDLK_DOWN) {
                             Uint32 tick_now = SDL_GetTicks();
                             int delta = (key == SDLK_UP) ? MOVE_DELAY_STEP_MS : -MOVE_DELAY_STEP_MS;
@@ -1708,59 +1778,66 @@ int play_game(const char *move_buffer, const char *header_result) {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
             note_mouse_activity_event(&e);
-            if (e.type == SDL_QUIT || (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_ESCAPE)) {
+            if (e.type == SDL_QUIT) {
                 quit = 1;
-            } else if (e.type == SDL_KEYDOWN &&
-                       (e.key.keysym.sym == SDLK_UP || e.key.keysym.sym == SDLK_DOWN)) {
-                Uint32 tick_now = SDL_GetTicks();
-                int delta = (e.key.keysym.sym == SDLK_UP) ? MOVE_DELAY_STEP_MS : -MOVE_DELAY_STEP_MS;
-                if (adjust_move_delay(delta, tick_now)) {
+            } else if (e.type == SDL_KEYDOWN) {
+                SDL_Keycode key = e.key.keysym.sym;
+                if (key == SDLK_q) {
+                    quit = 1;
+                } else if (key == SDLK_ESCAPE) {
+                    show_help = !show_help;
                     draw_board();
-                }
-            } else if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_a) {
-                if (analysis_mode) {
-                    exit_analysis_mode();
-                    analysis_dragging = 0;
-                    analysis_piece = '.';
-                    pause_start = now;
-                    pause_hold_total = 0;
-                    if (pause_hold) {
-                        pause_hold_start = now;
+                } else if (key == SDLK_UP || key == SDLK_DOWN) {
+                    Uint32 tick_now = SDL_GetTicks();
+                    int delta = (key == SDLK_UP) ? MOVE_DELAY_STEP_MS : -MOVE_DELAY_STEP_MS;
+                    if (adjust_move_delay(delta, tick_now)) {
+                        draw_board();
                     }
-                } else {
-                    enter_analysis_mode();
-                    analysis_dragging = 0;
-                    analysis_piece = '.';
-                }
-                draw_board();
-            } else if (!analysis_mode && e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_SPACE) {
-                if (!pause_hold) {
-                    pause_hold = 1;
-                    pause_hold_start = now;
-                    dim_board = 1;
+                } else if (key == SDLK_a) {
+                    if (analysis_mode) {
+                        exit_analysis_mode();
+                        analysis_dragging = 0;
+                        analysis_piece = '.';
+                        pause_start = now;
+                        pause_hold_total = 0;
+                        if (pause_hold) {
+                            pause_hold_start = now;
+                        }
+                    } else {
+                        enter_analysis_mode();
+                        analysis_dragging = 0;
+                        analysis_piece = '.';
+                    }
                     draw_board();
-                } else {
-                    pause_hold = 0;
-                    pause_hold_total += now - pause_hold_start;
-                    dim_board = 0;
+                } else if (!analysis_mode && key == SDLK_SPACE) {
+                    if (!pause_hold) {
+                        pause_hold = 1;
+                        pause_hold_start = now;
+                        dim_board = 1;
+                        draw_board();
+                    } else {
+                        pause_hold = 0;
+                        pause_hold_total += now - pause_hold_start;
+                        dim_board = 0;
+                        draw_board();
+                    }
+                } else if (key == SDLK_f) {
+                    view_from_white = !view_from_white;
                     draw_board();
-                }
-            } else if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_f) {
-                view_from_white = !view_from_white;
-                draw_board();
-            } else if (!analysis_mode && e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_LEFT) {
-                if (review_index > 0) {
-                    review_index--;
-                    show_loser_king = 0;
-                    show_draw_kings = 0;
-                    replay_moves_to_index(moves, move_count, review_index);
-                }
-            } else if (!analysis_mode && e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_RIGHT) {
-                if (review_index < move_count) {
-                    review_index++;
-                    show_loser_king = 0;
-                    show_draw_kings = 0;
-                    replay_moves_to_index(moves, move_count, review_index);
+                } else if (!analysis_mode && key == SDLK_LEFT) {
+                    if (review_index > 0) {
+                        review_index--;
+                        show_loser_king = 0;
+                        show_draw_kings = 0;
+                        replay_moves_to_index(moves, move_count, review_index);
+                    }
+                } else if (!analysis_mode && key == SDLK_RIGHT) {
+                    if (review_index < move_count) {
+                        review_index++;
+                        show_loser_king = 0;
+                        show_draw_kings = 0;
+                        replay_moves_to_index(moves, move_count, review_index);
+                    }
                 }
             } else if (analysis_mode && e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) {
                 BoardView view;
