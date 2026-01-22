@@ -98,8 +98,8 @@ void enter_analysis_mode(void);
 void exit_analysis_mode(void);
 SDL_Cursor *create_analysis_cursor(void);
 void clear_analysis_marks(void);
-void begin_mark_drag(const BoardView *view, int x, int y);
-void update_mark_drag(const BoardView *view, int x, int y);
+int begin_mark_drag(const BoardView *view, int x, int y);
+int update_mark_drag(const BoardView *view, int x, int y);
 void end_mark_drag(void);
 int adjust_move_delay(int delta_ms, Uint32 now);
 void render_speed_label(const BoardView *view);
@@ -482,26 +482,29 @@ SDL_Cursor *create_analysis_cursor(void) {
     return cursor;
 }
 
-void begin_mark_drag(const BoardView *view, int x, int y) {
+int begin_mark_drag(const BoardView *view, int x, int y) {
     int r = -1;
     int f = -1;
-    if (!screen_to_board(view, x, y, &r, &f)) return;
+    if (!screen_to_board(view, x, y, &r, &f)) return 0;
     mark_dragging = 1;
     mark_drag_value = analysis_marks[r][f] ? 0 : 1;
     analysis_marks[r][f] = (unsigned char)mark_drag_value;
     mark_last_r = r;
     mark_last_f = f;
+    return 1;
 }
 
-void update_mark_drag(const BoardView *view, int x, int y) {
-    if (!mark_dragging) return;
+int update_mark_drag(const BoardView *view, int x, int y) {
+    if (!mark_dragging) return 0;
     int r = -1;
     int f = -1;
-    if (!screen_to_board(view, x, y, &r, &f)) return;
-    if (r == mark_last_r && f == mark_last_f) return;
-    analysis_marks[r][f] = (unsigned char)mark_drag_value;
+    if (!screen_to_board(view, x, y, &r, &f)) return 0;
+    if (r == mark_last_r && f == mark_last_f) return 0;
     mark_last_r = r;
     mark_last_f = f;
+    if (analysis_marks[r][f] == (unsigned char)mark_drag_value) return 0;
+    analysis_marks[r][f] = (unsigned char)mark_drag_value;
+    return 1;
 }
 
 void end_mark_drag(void) {
@@ -1512,14 +1515,16 @@ int play_game(const char *move_buffer, const char *header_result) {
             } else if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_RIGHT) {
                 BoardView view;
                 get_board_view(&view);
-                begin_mark_drag(&view, e.button.x, e.button.y);
-                draw_board();
+                if (begin_mark_drag(&view, e.button.x, e.button.y) && !analysis_mode) {
+                    draw_board();
+                }
             } else if (e.type == SDL_MOUSEMOTION) {
                 if (e.motion.state & SDL_BUTTON_RMASK) {
                     BoardView view;
                     get_board_view(&view);
-                    update_mark_drag(&view, e.motion.x, e.motion.y);
-                    draw_board();
+                    if (update_mark_drag(&view, e.motion.x, e.motion.y) && !analysis_mode) {
+                        draw_board();
+                    }
                 }
                 if (analysis_mode && analysis_dragging) {
                     analysis_mouse_x = e.motion.x;
@@ -1781,14 +1786,16 @@ int play_game(const char *move_buffer, const char *header_result) {
             } else if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_RIGHT) {
                 BoardView view;
                 get_board_view(&view);
-                begin_mark_drag(&view, e.button.x, e.button.y);
-                draw_board();
+                if (begin_mark_drag(&view, e.button.x, e.button.y) && !analysis_mode) {
+                    draw_board();
+                }
             } else if (e.type == SDL_MOUSEMOTION) {
                 if (e.motion.state & SDL_BUTTON_RMASK) {
                     BoardView view;
                     get_board_view(&view);
-                    update_mark_drag(&view, e.motion.x, e.motion.y);
-                    draw_board();
+                    if (update_mark_drag(&view, e.motion.x, e.motion.y) && !analysis_mode) {
+                        draw_board();
+                    }
                 }
                 if (analysis_mode && analysis_dragging) {
                     analysis_mouse_x = e.motion.x;
