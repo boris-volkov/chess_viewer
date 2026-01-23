@@ -2,6 +2,15 @@
 
 Minimal SDL2 PGN chess viewer that plays random games from the `games/` folder.
 
+Inspired by Willy Hendriks in *Move First, Think Later*:
+
+>Apparently, looking for good moves does not have to be guided by language. Is it possible to improve your chess without language?
+>
+>A form of training that refrains from what can be called 'conceptual' learning, is the following: you let your chess program play instructive games at a set speed (say five to ten seconds per move), without commentary, explanations or lines. Headphones with some nice background music are allowed ... the idea - watching without the necessity of 'conscious' processing - can be fruitful.
+
+
+
+
 ## Requirements
 - C compiler (MSVC, clang, or gcc)
 - CMake 3.16+
