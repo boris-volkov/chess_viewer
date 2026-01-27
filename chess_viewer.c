@@ -66,6 +66,9 @@ int move_delay_ms = MOVE_DELAY_MS;
 Uint32 speed_message_until = 0;
 int analysis_mode = 0;
 int show_help = 0;
+int guess_mode = 0;
+int guess_score = 0;
+int turn_is_white = 1;
 int game_nav_request = GAME_NAV_NONE;
 int analysis_saved_dim = 0;
 int analysis_saved_show_loser_king = 0;
@@ -110,6 +113,7 @@ void end_mark_drag(void);
 int adjust_move_delay(int delta_ms, Uint32 now);
 void render_speed_label(const BoardView *view);
 void render_help_overlay(const BoardView *view);
+void render_guess_score(const BoardView *view);
 void set_cursor_visible(int visible);
 void note_mouse_activity(Uint32 now);
 void update_cursor_auto_hide(Uint32 now);
@@ -293,6 +297,53 @@ void render_speed_label(const BoardView *view) {
     draw_text(x, y, scale, buf, text_color);
 }
 
+void render_guess_score(const BoardView *view) {
+    if (!guess_mode) return;
+
+    char buf[32];
+    snprintf(buf, sizeof(buf), "Score: %d", guess_score);
+
+    int scale = (view->square >= 60) ? 3 : 2;
+    int margin = (view->square >= 60) ? 16 : 8;
+    int text_w = text_width_px(buf, scale);
+    int text_h = 7 * scale;
+    int swatch_size = text_h;
+    if (swatch_size > 16) swatch_size = 16;
+    int gap = (scale >= 3) ? 6 : 4;
+
+    int x = view->offset_x + margin;
+    int y = view->offset_y + view->board_px - margin - text_h;
+    int swatch_x = x - gap - swatch_size;
+
+    int left_space = view->offset_x;
+    int right_space = view->screen_w - (view->offset_x + view->board_px);
+    int need_w = text_w + swatch_size + gap + margin * 2;
+    if (left_space >= need_w) {
+        x = view->offset_x - margin - text_w;
+        swatch_x = x - gap - swatch_size;
+    } else if (right_space >= need_w) {
+        swatch_x = view->offset_x + view->board_px + margin;
+        x = swatch_x + swatch_size + gap;
+    } else if (view->offset_y >= text_h + margin * 2) {
+        swatch_x = view->offset_x + margin;
+        x = swatch_x + swatch_size + gap;
+        y = view->offset_y - margin - text_h;
+    } else {
+        swatch_x = view->offset_x + margin;
+        x = swatch_x + swatch_size + gap;
+    }
+    if (y < view->offset_y + margin) {
+        y = view->offset_y + margin;
+    }
+
+    SDL_Color fill = turn_is_white ? (SDL_Color){235, 235, 235, 255} : (SDL_Color){25, 25, 25, 255};
+    SDL_Color outline = turn_is_white ? (SDL_Color){30, 30, 30, 255} : (SDL_Color){235, 235, 235, 255};
+    draw_color_swatch(swatch_x, y + (text_h - swatch_size) / 2, swatch_size, fill, outline);
+
+    SDL_Color text_color = {255, 255, 255, 255};
+    draw_text(x, y, scale, buf, text_color);
+}
+
 void render_help_overlay(const BoardView *view) {
     if (!show_help) return;
 
@@ -311,10 +362,14 @@ void render_help_overlay(const BoardView *view) {
         "PLAYBACK:",
         "  SPACE: PAUSE/RESUME",
         "  A: TOGGLE ANALYSIS",
+        "  G: TOGGLE GUESS MODE",
         "PAUSED (SPACE):",
         "  LEFT/RIGHT: STEP MOVES",
         "ANALYSIS (A):",
-        "  LEFT DRAG: MOVE PIECE"
+        "  LEFT DRAG: MOVE PIECE",
+        "GUESS MODE (G):",
+        "  LEFT DRAG: GUESS MOVE",
+        "  SCORE: 1 POINT IF MATCH"
     };
     int line_count = (int)(sizeof(lines) / sizeof(lines[0]));
 
@@ -591,7 +646,7 @@ void note_mouse_activity(Uint32 now) {
 }
 
 void update_cursor_auto_hide(Uint32 now) {
-    if (analysis_mode || mark_dragging) {
+    if (analysis_mode || guess_mode || mark_dragging) {
         if (!cursor_visible) set_cursor_visible(1);
         return;
     }
@@ -666,6 +721,10 @@ void render_board(const BoardView *view, const Overlay *overlay) {
 
     SDL_Color light = analysis_mode ? (SDL_Color){215, 210, 200, 255} : (SDL_Color){210, 210, 210, 255};
     SDL_Color dark  = analysis_mode ? (SDL_Color){155, 150, 140, 255} : (SDL_Color){150, 150, 150, 255};
+    if (guess_mode && !analysis_mode) {
+        light = (SDL_Color){200, 220, 200, 255};
+        dark = (SDL_Color){140, 160, 140, 255};
+    }
     if (dim_board) {
         light.r = (Uint8)(light.r * 2 / 3);
         light.g = (Uint8)(light.g * 2 / 3);
@@ -767,6 +826,7 @@ void render_board(const BoardView *view, const Overlay *overlay) {
     render_year_label(view);
     render_speed_label(view);
     render_player_labels(view);
+    render_guess_score(view);
     render_help_overlay(view);
 
     SDL_RenderPresent(renderer);
@@ -1552,10 +1612,21 @@ int play_game(const char *move_buffer, const char *header_result) {
     int analysis_from_f = -1;
     int analysis_mouse_x = 0;
     int analysis_mouse_y = 0;
+    int guess_dragging = 0;
+    char guess_piece = '.';
+    int guess_from_r = -1;
+    int guess_from_f = -1;
+    int guess_mouse_x = 0;
+    int guess_mouse_y = 0;
+    int guess_pending = 0;
+    int guess_to_r = -1;
+    int guess_to_f = -1;
+    guess_score = 0;
 
     while (!quit) {
         Uint32 loop_now = SDL_GetTicks();
         update_cursor_auto_hide(loop_now);
+        turn_is_white = (index % 2 == 0);
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
             note_mouse_activity_event(&e);
@@ -1593,14 +1664,38 @@ int play_game(const char *move_buffer, const char *header_result) {
                         exit_analysis_mode();
                         analysis_dragging = 0;
                         analysis_piece = '.';
+                    } else if (guess_mode) {
+                        guess_mode = 0;
+                        guess_dragging = 0;
+                        guess_pending = 0;
+                        enter_analysis_mode();
                     } else {
                         enter_analysis_mode();
                         analysis_dragging = 0;
                         analysis_piece = '.';
                     }
                     draw_board();
+                } else if (key == SDLK_g) {
+                    if (guess_mode) {
+                        guess_mode = 0;
+                        guess_dragging = 0;
+                        guess_pending = 0;
+                    } else {
+                        if (analysis_mode) {
+                            exit_analysis_mode();
+                            analysis_dragging = 0;
+                            analysis_piece = '.';
+                        }
+                        guess_mode = 1;
+                        guess_dragging = 0;
+                        guess_pending = 0;
+                    }
+                    dim_board = 0;
+                    paused = 0;
+                    pause_buffered = 0;
+                    draw_board();
                 } else if (key == SDLK_SPACE) {
-                    if (!analysis_mode) {
+                    if (!analysis_mode && !guess_mode) {
                         paused = !paused;
                         dim_board = paused;
                         last_move_tick = SDL_GetTicks();
@@ -1609,12 +1704,12 @@ int play_game(const char *move_buffer, const char *header_result) {
                 } else if (key == SDLK_f) {
                     view_from_white = !view_from_white;
                     draw_board();
-                } else if (!analysis_mode && paused && key == SDLK_LEFT) {
+                } else if (!analysis_mode && !guess_mode && paused && key == SDLK_LEFT) {
                     if (index > 0) {
                         index--;
                         replay_moves_to_index(moves, move_count, index);
                     }
-                } else if (!analysis_mode && paused && key == SDLK_RIGHT) {
+                } else if (!analysis_mode && !guess_mode && paused && key == SDLK_RIGHT) {
                     if (index < move_count) {
                         index++;
                         replay_moves_to_index(moves, move_count, index);
@@ -1634,6 +1729,24 @@ int play_game(const char *move_buffer, const char *header_result) {
                         analysis_mouse_x = e.button.x;
                         analysis_mouse_y = e.button.y;
                         board[r][f] = '.';
+                    }
+                }
+            } else if (guess_mode && !analysis_mode && e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) {
+                BoardView view;
+                get_board_view(&view);
+                int r = -1;
+                int f = -1;
+                if (screen_to_board(&view, e.button.x, e.button.y, &r, &f)) {
+                    if (board[r][f] != '.') {
+                        int is_white_turn = (index % 2 == 0);
+                        if (is_white_piece(board[r][f]) == is_white_turn) {
+                            guess_dragging = 1;
+                            guess_piece = board[r][f];
+                            guess_from_r = r;
+                            guess_from_f = f;
+                            guess_mouse_x = e.button.x;
+                            guess_mouse_y = e.button.y;
+                        }
                     }
                 }
             } else if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_MIDDLE) {
@@ -1659,6 +1772,10 @@ int play_game(const char *move_buffer, const char *header_result) {
                     analysis_mouse_x = e.motion.x;
                     analysis_mouse_y = e.motion.y;
                 }
+                if (guess_mode && guess_dragging) {
+                    guess_mouse_x = e.motion.x;
+                    guess_mouse_y = e.motion.y;
+                }
             } else if (e.type == SDL_MOUSEBUTTONUP && e.button.button == SDL_BUTTON_RIGHT) {
                 end_mark_drag();
             } else if (analysis_mode && e.type == SDL_MOUSEBUTTONUP && e.button.button == SDL_BUTTON_LEFT) {
@@ -1677,6 +1794,19 @@ int play_game(const char *move_buffer, const char *header_result) {
                     analysis_dragging = 0;
                     analysis_piece = '.';
                 }
+            } else if (guess_mode && !analysis_mode && e.type == SDL_MOUSEBUTTONUP && e.button.button == SDL_BUTTON_LEFT) {
+                if (guess_dragging) {
+                    guess_mouse_x = e.button.x;
+                    guess_mouse_y = e.button.y;
+                    BoardView view;
+                    get_board_view(&view);
+                    if (screen_to_board(&view, guess_mouse_x, guess_mouse_y, &guess_to_r, &guess_to_f)) {
+                        if (guess_to_r != guess_from_r || guess_to_f != guess_from_f) {
+                            guess_pending = 1;
+                        }
+                    }
+                    guess_dragging = 0;
+                }
             }
         }
         if (quit) break;
@@ -1685,6 +1815,31 @@ int play_game(const char *move_buffer, const char *header_result) {
         if (!analysis_mode && speed_message_until != 0 && speed_now >= speed_message_until) {
             speed_message_until = 0;
             draw_board();
+        }
+
+        if (guess_pending && index < move_count) {
+            int is_white = (index % 2 == 0);
+            Move expected = {0};
+            if (parse_san(moves[index], is_white, &expected)) {
+                if (expected.from_r == guess_from_r && expected.from_f == guess_from_f &&
+                    expected.to_r == guess_to_r && expected.to_f == guess_to_f) {
+                    guess_score++;
+                } else {
+                    guess_score--;
+                }
+                if (animate_move(&expected, is_white)) {
+                    quit = 1;
+                    break;
+                }
+                apply_move(&expected, is_white);
+                index++;
+                turn_is_white = (index % 2 == 0);
+                last_move_tick = SDL_GetTicks();
+                draw_board();
+            } else {
+                printf("Failed to parse move: %s\n", moves[index]);
+            }
+            guess_pending = 0;
         }
 
         if (analysis_mode) {
@@ -1700,6 +1855,25 @@ int play_game(const char *move_buffer, const char *header_result) {
                 overlay.skip_f1 = analysis_from_f;
             }
             render_board(&view, analysis_dragging ? &overlay : NULL);
+            SDL_Delay(10);
+            continue;
+        }
+
+        if (guess_mode) {
+            BoardView view;
+            get_board_view(&view);
+            Overlay overlay = {0};
+            if (guess_dragging) {
+                overlay.active = 1;
+                overlay.piece = guess_piece;
+                overlay.x = (float)guess_mouse_x - (float)view.square * 0.5f;
+                overlay.y = (float)guess_mouse_y - (float)view.square * 0.5f;
+                overlay.skip_r1 = guess_from_r;
+                overlay.skip_f1 = guess_from_f;
+                render_board(&view, &overlay);
+            } else {
+                render_board(&view, NULL);
+            }
             SDL_Delay(10);
             continue;
         }
@@ -1726,6 +1900,7 @@ int play_game(const char *move_buffer, const char *header_result) {
                     printf("Failed to parse move: %s\n", moves[index]);
                 }
                 index++;
+                turn_is_white = (index % 2 == 0);
                 last_move_tick = now;
             }
         } else if (index >= move_count) {
