@@ -34,6 +34,10 @@
 #define KING_FLIP_MS 800
 #define SPEED_MESSAGE_MS 1500
 #define CURSOR_IDLE_MS 2500
+#define GAME_NAV_PREV -1
+#define GAME_NAV_NONE 0
+#define GAME_NAV_NEXT 1
+#define GAME_NAV_RESTART 2
 
 #ifdef _WIN32
 #define PATH_SEP '\\'
@@ -62,6 +66,7 @@ int move_delay_ms = MOVE_DELAY_MS;
 Uint32 speed_message_until = 0;
 int analysis_mode = 0;
 int show_help = 0;
+int game_nav_request = GAME_NAV_NONE;
 int analysis_saved_dim = 0;
 int analysis_saved_show_loser_king = 0;
 int analysis_saved_show_draw_kings = 0;
@@ -295,6 +300,9 @@ void render_help_overlay(const BoardView *view) {
         "HELP",
         "ALL MODES:",
         "  Q: QUIT",
+        "  N: NEXT GAME",
+        "  P: PREV GAME",
+        "  R: RESTART GAME",
         "  ESC: TOGGLE HELP",
         "  F: FLIP VIEW",
         "  UP/DOWN: SPEED",
@@ -1038,6 +1046,16 @@ int animate_move(const Move *m, int is_white) {
             } else if (e.type == SDL_KEYDOWN) {
                 SDL_Keycode key = e.key.keysym.sym;
                 if (key == SDLK_q) {
+                    game_nav_request = GAME_NAV_NONE;
+                    return 1;
+                } else if (key == SDLK_n) {
+                    game_nav_request = GAME_NAV_NEXT;
+                    return 1;
+                } else if (key == SDLK_p) {
+                    game_nav_request = GAME_NAV_PREV;
+                    return 1;
+                } else if (key == SDLK_r) {
+                    game_nav_request = GAME_NAV_RESTART;
                     return 1;
                 } else if (key == SDLK_ESCAPE) {
                     show_help = !show_help;
@@ -1208,6 +1226,11 @@ typedef struct {
     char result[RESULT_LEN];
 } Game;
 
+typedef struct {
+    char *path;
+    int game_index;
+} GameSelection;
+
 char *copy_string(const char *s) {
     size_t len = strlen(s);
     char *out = (char *)malloc(len + 1);
@@ -1300,6 +1323,35 @@ int list_pgn_files(const char *dir, char ***out_files) {
 
     *out_files = files;
     return count;
+}
+
+int push_selection(GameSelection **history, int *count, int *cap, GameSelection sel) {
+    if (*count >= *cap) {
+        int new_cap = (*cap == 0) ? 8 : (*cap * 2);
+        GameSelection *next = (GameSelection *)realloc(*history, new_cap * sizeof(*next));
+        if (!next) return 0;
+        *history = next;
+        *cap = new_cap;
+    }
+    (*history)[*count] = sel;
+    (*count)++;
+    return 1;
+}
+
+int choose_random_selection(const char *games_dir, GameSelection *out_sel) {
+    char **files = NULL;
+    int file_count = list_pgn_files(games_dir, &files);
+    if (file_count <= 0) {
+        if (files && file_count > 0) free_string_list(files, file_count);
+        return 0;
+    }
+    int file_index = rand() % file_count;
+    char *path = join_path(games_dir, files[file_index]);
+    free_string_list(files, file_count);
+    if (!path) return 0;
+    out_sel->path = path;
+    out_sel->game_index = -1;
+    return 1;
 }
 
 int parse_tag_value(const char *line, const char *tag, char *out, size_t out_size) {
@@ -1493,6 +1545,7 @@ int play_game(const char *move_buffer, const char *header_result) {
     show_draw_kings = 0;
     dim_board = 0;
     pause_buffered = 0;
+    game_nav_request = GAME_NAV_NONE;
     int analysis_dragging = 0;
     char analysis_piece = '.';
     int analysis_from_r = -1;
@@ -1511,6 +1564,16 @@ int play_game(const char *move_buffer, const char *header_result) {
             } else if (e.type == SDL_KEYDOWN) {
                 SDL_Keycode key = e.key.keysym.sym;
                 if (key == SDLK_q) {
+                    game_nav_request = GAME_NAV_NONE;
+                    quit = 1;
+                } else if (key == SDLK_n) {
+                    game_nav_request = GAME_NAV_NEXT;
+                    quit = 1;
+                } else if (key == SDLK_p) {
+                    game_nav_request = GAME_NAV_PREV;
+                    quit = 1;
+                } else if (key == SDLK_r) {
+                    game_nav_request = GAME_NAV_RESTART;
                     quit = 1;
                 } else if (key == SDLK_ESCAPE) {
                     show_help = !show_help;
@@ -1693,6 +1756,16 @@ int play_game(const char *move_buffer, const char *header_result) {
                     } else if (e.type == SDL_KEYDOWN) {
                         SDL_Keycode key = e.key.keysym.sym;
                         if (key == SDLK_q) {
+                            game_nav_request = GAME_NAV_NONE;
+                            quit = 1;
+                        } else if (key == SDLK_n) {
+                            game_nav_request = GAME_NAV_NEXT;
+                            quit = 1;
+                        } else if (key == SDLK_p) {
+                            game_nav_request = GAME_NAV_PREV;
+                            quit = 1;
+                        } else if (key == SDLK_r) {
+                            game_nav_request = GAME_NAV_RESTART;
                             quit = 1;
                         } else if (key == SDLK_ESCAPE) {
                             show_help = !show_help;
@@ -1733,6 +1806,16 @@ int play_game(const char *move_buffer, const char *header_result) {
                     } else if (e.type == SDL_KEYDOWN) {
                         SDL_Keycode key = e.key.keysym.sym;
                         if (key == SDLK_q) {
+                            game_nav_request = GAME_NAV_NONE;
+                            quit = 1;
+                        } else if (key == SDLK_n) {
+                            game_nav_request = GAME_NAV_NEXT;
+                            quit = 1;
+                        } else if (key == SDLK_p) {
+                            game_nav_request = GAME_NAV_PREV;
+                            quit = 1;
+                        } else if (key == SDLK_r) {
+                            game_nav_request = GAME_NAV_RESTART;
                             quit = 1;
                         } else if (key == SDLK_ESCAPE) {
                             show_help = !show_help;
@@ -1783,6 +1866,16 @@ int play_game(const char *move_buffer, const char *header_result) {
             } else if (e.type == SDL_KEYDOWN) {
                 SDL_Keycode key = e.key.keysym.sym;
                 if (key == SDLK_q) {
+                    game_nav_request = GAME_NAV_NONE;
+                    quit = 1;
+                } else if (key == SDLK_n) {
+                    game_nav_request = GAME_NAV_NEXT;
+                    quit = 1;
+                } else if (key == SDLK_p) {
+                    game_nav_request = GAME_NAV_PREV;
+                    quit = 1;
+                } else if (key == SDLK_r) {
+                    game_nav_request = GAME_NAV_RESTART;
                     quit = 1;
                 } else if (key == SDLK_ESCAPE) {
                     show_help = !show_help;
@@ -1961,50 +2054,60 @@ int main(int argc, char *argv[]) {
 
     srand((unsigned int)time(NULL));
 
+    GameSelection *history = NULL;
+    int history_count = 0;
+    int history_cap = 0;
+    int history_pos = -1;
+    int need_new_selection = 1;
+    int keep_view = 0;
     int quit = 0;
     while (!quit) {
-        char **files = NULL;
-        int file_count = list_pgn_files(games_dir, &files);
-        if (file_count <= 0) {
-            if (file_count < 0) {
-                printf("Failed to read PGN directory %s\n", games_dir);
-            } else {
+        if (need_new_selection) {
+            GameSelection sel = {0};
+            if (!choose_random_selection(games_dir, &sel)) {
                 printf("No PGN files found in %s\n", games_dir);
+                break;
             }
-            free_string_list(files, file_count);
-            break;
+            if (!push_selection(&history, &history_count, &history_cap, sel)) {
+                free(sel.path);
+                break;
+            }
+            history_pos = history_count - 1;
+            need_new_selection = 0;
+            keep_view = 0;
         }
 
-        int file_index = rand() % file_count;
-        char *path = join_path(games_dir, files[file_index]);
-        free_string_list(files, file_count);
-        if (!path) {
-            printf("Failed to build PGN path.\n");
-            break;
+        if (history_pos < 0 || history_pos >= history_count) {
+            need_new_selection = 1;
+            continue;
         }
 
-        FILE *fp = fopen(path, "r");
+        GameSelection *sel = &history[history_pos];
+        FILE *fp = fopen(sel->path, "r");
         if (!fp) {
-            printf("Failed to open %s\n", path);
-            free(path);
+            printf("Failed to open %s\n", sel->path);
             SDL_Delay(500);
+            need_new_selection = 1;
             continue;
         }
 
         Game *games = NULL;
         int game_count = load_games(fp, &games);
         fclose(fp);
-        free(path);
         if (game_count <= 0) {
             if (game_count < 0) {
                 printf("Failed to load games from PGN.\n");
             }
             free_games(games, game_count);
             SDL_Delay(500);
+            need_new_selection = 1;
             continue;
         }
 
-        int game_index = rand() % game_count;
+        if (sel->game_index < 0 || sel->game_index >= game_count) {
+            sel->game_index = rand() % game_count;
+        }
+        int game_index = sel->game_index;
         set_last_name(current_white_name, sizeof(current_white_name), games[game_index].white);
         if (current_white_name[0] == '\0') {
             strncpy(current_white_name, games[game_index].white, NAME_LEN - 1);
@@ -2017,10 +2120,44 @@ int main(int argc, char *argv[]) {
         }
         strncpy(current_game_year, games[game_index].year, YEAR_LEN - 1);
         current_game_year[YEAR_LEN - 1] = '\0';
-        view_from_white = (rand() % 2) ? 1 : 0;
-        quit = play_game(games[game_index].moves, games[game_index].result);
+        if (!keep_view) {
+            view_from_white = (rand() % 2) ? 1 : 0;
+        }
+        keep_view = 0;
+        int stop = play_game(games[game_index].moves, games[game_index].result);
         free_games(games, game_count);
+
+        int nav = game_nav_request;
+        game_nav_request = GAME_NAV_NONE;
+        if (stop && nav == GAME_NAV_NONE) {
+            quit = 1;
+            break;
+        }
+        if (nav == GAME_NAV_NEXT) {
+            if (history_pos < history_count - 1) {
+                history_pos++;
+            } else {
+                need_new_selection = 1;
+            }
+        } else if (nav == GAME_NAV_PREV) {
+            if (history_pos > 0) {
+                history_pos--;
+            }
+        } else if (nav == GAME_NAV_RESTART) {
+            keep_view = 1;
+        } else if (!stop) {
+            if (history_pos < history_count - 1) {
+                history_pos++;
+            } else {
+                need_new_selection = 1;
+            }
+        }
     }
+
+    for (int i = 0; i < history_count; i++) {
+        free(history[i].path);
+    }
+    free(history);
 
     // Cleanup
     for (int i = 0; i < 256; i++) {
