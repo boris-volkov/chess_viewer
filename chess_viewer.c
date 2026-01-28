@@ -13,6 +13,7 @@
 #include <windows.h>
 #else
 #include <dirent.h>
+#include <strings.h>
 #endif
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_image.h>
@@ -48,6 +49,11 @@
 #define PATH_SEP_STR "/"
 #endif
 
+typedef struct {
+    char *name;
+    int type;
+} CatalogEntry;
+
 char board[BOARD_SIZE][BOARD_SIZE];
 SDL_Window *window = NULL;
 SDL_Renderer *renderer = NULL;
@@ -74,11 +80,12 @@ int turn_is_white = 1;
 int game_nav_request = GAME_NAV_NONE;
 int catalog_active = 0;
 int catalog_selection_made = 0;
-char **catalog_files = NULL;
-int catalog_count = 0;
+CatalogEntry *catalog_entries = NULL;
+int catalog_entry_count = 0;
 int catalog_index = 0;
 int catalog_scroll = 0;
 char *forced_pgn_path = NULL;
+char catalog_dir[1024] = "";
 int analysis_saved_dim = 0;
 int analysis_saved_show_loser_king = 0;
 int analysis_saved_show_draw_kings = 0;
@@ -128,9 +135,14 @@ void catalog_free(void);
 void catalog_open(const char *games_dir);
 void catalog_select(const char *games_dir);
 int handle_catalog_event(const SDL_Event *e, const char *games_dir);
+int catalog_total_entries(void);
+char *copy_string(const char *s);
+int has_pgn_extension(const char *name);
 void free_string_list(char **items, int count);
 char *join_path(const char *dir, const char *name);
 int list_pgn_files(const char *dir, char ***out_files);
+static int list_pgn_files_recursive(const char *dir, const char *base,
+                                    char ***out_files, int *count, int *cap);
 void set_cursor_visible(int visible);
 void note_mouse_activity(Uint32 now);
 void update_cursor_auto_hide(Uint32 now);
@@ -435,12 +447,173 @@ static int filename_cmp(const void *a, const void *b) {
 #endif
 }
 
-void catalog_free(void) {
-    if (catalog_files) {
-        free_string_list(catalog_files, catalog_count);
+static int catalog_entry_cmp(const void *a, const void *b) {
+    const CatalogEntry *ea = (const CatalogEntry *)a;
+    const CatalogEntry *eb = (const CatalogEntry *)b;
+    if (ea->type != eb->type) return (ea->type < eb->type) ? -1 : 1;
+#ifdef _WIN32
+    return _stricmp(ea->name, eb->name);
+#else
+    return strcasecmp(ea->name, eb->name);
+#endif
+}
+
+static int push_catalog_entry(CatalogEntry **items, int *count, int *cap, const char *name, int type) {
+    if (*count >= *cap) {
+        int new_cap = (*cap == 0) ? 16 : (*cap * 2);
+        CatalogEntry *next = (CatalogEntry *)realloc(*items, (size_t)new_cap * sizeof(*next));
+        if (!next) return 0;
+        *items = next;
+        *cap = new_cap;
     }
-    catalog_files = NULL;
-    catalog_count = 0;
+    (*items)[*count].name = copy_string(name);
+    if (!(*items)[*count].name) return 0;
+    (*items)[*count].type = type;
+    (*count)++;
+    return 1;
+}
+
+static void catalog_set_dir(const char *new_dir) {
+    if (!new_dir) {
+        catalog_dir[0] = '\0';
+        return;
+    }
+    strncpy(catalog_dir, new_dir, sizeof(catalog_dir) - 1);
+    catalog_dir[sizeof(catalog_dir) - 1] = '\0';
+}
+
+static void catalog_dir_up(void) {
+    size_t len = strlen(catalog_dir);
+    if (len == 0) return;
+    for (size_t i = len; i > 0; i--) {
+        if (catalog_dir[i - 1] == '/' || catalog_dir[i - 1] == '\\') {
+            catalog_dir[i - 1] = '\0';
+            return;
+        }
+    }
+    catalog_dir[0] = '\0';
+}
+
+static int catalog_load_entries(const char *games_dir) {
+    CatalogEntry *entries = NULL;
+    int count = 0;
+    int cap = 0;
+    char *dir_path = NULL;
+    if (catalog_dir[0] == '\0') {
+        dir_path = copy_string(games_dir);
+    } else {
+        dir_path = join_path(games_dir, catalog_dir);
+    }
+    if (!dir_path) return 0;
+
+#ifdef _WIN32
+    char *search = join_path(dir_path, "*");
+    if (!search) {
+        free(dir_path);
+        return 0;
+    }
+    WIN32_FIND_DATAA data;
+    HANDLE h = FindFirstFileA(search, &data);
+    free(search);
+    if (h == INVALID_HANDLE_VALUE) {
+        free(dir_path);
+        return 0;
+    }
+    do {
+        if (strcmp(data.cFileName, ".") == 0 || strcmp(data.cFileName, "..") == 0) continue;
+        if (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            if (!push_catalog_entry(&entries, &count, &cap, data.cFileName, 1)) {
+                FindClose(h);
+                free(dir_path);
+                catalog_entries = entries;
+                catalog_entry_count = count;
+                return 0;
+            }
+        } else if (has_pgn_extension(data.cFileName)) {
+            if (!push_catalog_entry(&entries, &count, &cap, data.cFileName, 0)) {
+                FindClose(h);
+                free(dir_path);
+                catalog_entries = entries;
+                catalog_entry_count = count;
+                return 0;
+            }
+        }
+    } while (FindNextFileA(h, &data));
+    FindClose(h);
+#else
+    DIR *d = opendir(dir_path);
+    if (!d) {
+        free(dir_path);
+        return 0;
+    }
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL) {
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
+        char *full = join_path(dir_path, ent->d_name);
+        if (!full) {
+            closedir(d);
+            free(dir_path);
+            return 0;
+        }
+        int is_dir = 0;
+#ifdef DT_DIR
+        if (ent->d_type == DT_DIR) is_dir = 1;
+        if (ent->d_type == DT_UNKNOWN)
+#endif
+        {
+            DIR *probe = opendir(full);
+            if (probe) {
+                is_dir = 1;
+                closedir(probe);
+            }
+        }
+        if (is_dir) {
+            if (!push_catalog_entry(&entries, &count, &cap, ent->d_name, 1)) {
+                free(full);
+                closedir(d);
+                free(dir_path);
+                return 0;
+            }
+        } else if (has_pgn_extension(ent->d_name)) {
+            if (!push_catalog_entry(&entries, &count, &cap, ent->d_name, 0)) {
+                free(full);
+                closedir(d);
+                free(dir_path);
+                return 0;
+            }
+        }
+        free(full);
+    }
+    closedir(d);
+#endif
+
+    if (catalog_dir[0] != '\0') {
+        push_catalog_entry(&entries, &count, &cap, "..", 2);
+    }
+
+    if (count > 1) {
+        qsort(entries, (size_t)count, sizeof(entries[0]), catalog_entry_cmp);
+    }
+
+    for (int i = 0; i < catalog_entry_count; i++) {
+        free(catalog_entries[i].name);
+    }
+    free(catalog_entries);
+    catalog_entries = entries;
+    catalog_entry_count = count;
+    free(dir_path);
+    return 1;
+}
+
+void catalog_free(void) {
+    if (catalog_entries) {
+        for (int i = 0; i < catalog_entry_count; i++) {
+            free(catalog_entries[i].name);
+        }
+        free(catalog_entries);
+    }
+    catalog_entries = NULL;
+    catalog_entry_count = 0;
     catalog_index = 0;
     catalog_scroll = 0;
     catalog_active = 0;
@@ -449,27 +622,16 @@ void catalog_free(void) {
 void catalog_open(const char *games_dir) {
     if (catalog_active) return;
     catalog_free();
-    catalog_count = list_pgn_files(games_dir, &catalog_files);
-    if (catalog_count < 0) {
-        catalog_files = NULL;
-        catalog_count = 0;
+    catalog_set_dir("");
+    if (!catalog_load_entries(games_dir)) {
+        catalog_entries = NULL;
+        catalog_entry_count = 0;
         return;
-    }
-    if (catalog_count > 1) {
-        qsort(catalog_files, (size_t)catalog_count, sizeof(catalog_files[0]), filename_cmp);
     }
     catalog_active = 1;
     catalog_selection_made = 0;
     catalog_index = 0;
     catalog_scroll = 0;
-    if (forced_pgn_path) {
-        for (int i = 0; i < catalog_count; i++) {
-            if (strstr(forced_pgn_path, catalog_files[i])) {
-                catalog_index = i + 1;
-                break;
-            }
-        }
-    }
 }
 
 void catalog_select(const char *games_dir) {
@@ -478,12 +640,42 @@ void catalog_select(const char *games_dir) {
         free(forced_pgn_path);
         forced_pgn_path = NULL;
     } else {
-        int file_index = catalog_index - 1;
-        if (file_index >= 0 && file_index < catalog_count) {
-            char *path = join_path(games_dir, catalog_files[file_index]);
-            if (path) {
-                free(forced_pgn_path);
-                forced_pgn_path = path;
+        int entry_index = catalog_index - 1;
+        if (entry_index >= 0 && entry_index < catalog_entry_count) {
+            CatalogEntry *entry = &catalog_entries[entry_index];
+            if (entry->type == 2) {
+                catalog_dir_up();
+                catalog_load_entries(games_dir);
+                catalog_index = 0;
+                catalog_scroll = 0;
+                return;
+            }
+            if (entry->type == 1) {
+                char next_dir[1024];
+                if (catalog_dir[0] == '\0') {
+                    snprintf(next_dir, sizeof(next_dir), "%s", entry->name);
+                } else {
+                    snprintf(next_dir, sizeof(next_dir), "%s%c%s", catalog_dir, PATH_SEP, entry->name);
+                }
+                catalog_set_dir(next_dir);
+                catalog_load_entries(games_dir);
+                catalog_index = 0;
+                catalog_scroll = 0;
+                return;
+            }
+            char *dir_path = NULL;
+            if (catalog_dir[0] == '\0') {
+                dir_path = copy_string(games_dir);
+            } else {
+                dir_path = join_path(games_dir, catalog_dir);
+            }
+            if (dir_path) {
+                char *path = join_path(dir_path, entry->name);
+                free(dir_path);
+                if (path) {
+                    free(forced_pgn_path);
+                    forced_pgn_path = path;
+                }
             }
         }
     }
@@ -491,12 +683,16 @@ void catalog_select(const char *games_dir) {
     catalog_active = 0;
 }
 
+int catalog_total_entries(void) {
+    return 1 + catalog_entry_count;
+}
+
 void render_catalog_overlay(const BoardView *view) {
     if (!catalog_active) return;
 
     const char *title = "CATALOG";
     const char *random_label = "[RANDOM FILE]";
-    int total_entries = catalog_count + 1;
+    int total_entries = catalog_total_entries();
 
     int scale = (view->square >= 60) ? 3 : 2;
     int line_gap = (scale >= 3) ? 4 : 3;
@@ -507,8 +703,17 @@ void render_catalog_overlay(const BoardView *view) {
     int max_w = text_width_px(title, scale);
     int random_w = text_width_px(random_label, scale);
     if (random_w > max_w) max_w = random_w;
-    for (int i = 0; i < catalog_count; i++) {
-        int w = text_width_px(catalog_files[i], scale);
+    for (int i = 0; i < catalog_entry_count; i++) {
+        char label[1024];
+        const CatalogEntry *entry = &catalog_entries[i];
+        if (entry->type == 1) {
+            snprintf(label, sizeof(label), "[DIR] %s", entry->name);
+        } else if (entry->type == 2) {
+            snprintf(label, sizeof(label), "[..]");
+        } else {
+            snprintf(label, sizeof(label), "%s", entry->name);
+        }
+        int w = text_width_px(label, scale);
         if (w > max_w) max_w = w;
     }
 
@@ -543,7 +748,20 @@ void render_catalog_overlay(const BoardView *view) {
     for (int i = 0; i < max_lines; i++) {
         int idx = catalog_scroll + i;
         if (idx >= total_entries) break;
-        const char *label = (idx == 0) ? random_label : catalog_files[idx - 1];
+        char label[1024];
+        if (idx == 0) {
+            strncpy(label, random_label, sizeof(label) - 1);
+            label[sizeof(label) - 1] = '\0';
+        } else {
+            const CatalogEntry *entry = &catalog_entries[idx - 1];
+            if (entry->type == 1) {
+                snprintf(label, sizeof(label), "[DIR] %s", entry->name);
+            } else if (entry->type == 2) {
+                snprintf(label, sizeof(label), "[..]");
+            } else {
+                snprintf(label, sizeof(label), "%s", entry->name);
+            }
+        }
         if (idx == catalog_index) {
             SDL_Rect hi = {text_x - 3, text_y - 3, max_w + 6, text_h + 6};
             SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
@@ -566,7 +784,7 @@ int handle_catalog_event(const SDL_Event *e, const char *games_dir) {
             if (catalog_index > 0) catalog_index--;
             return 1;
         } else if (key == SDLK_DOWN) {
-            int total = catalog_count + 1;
+            int total = catalog_total_entries();
             if (catalog_index < total - 1) catalog_index++;
             return 1;
         } else if (key == SDLK_PAGEUP) {
@@ -576,7 +794,7 @@ int handle_catalog_event(const SDL_Event *e, const char *games_dir) {
             return 1;
         } else if (key == SDLK_PAGEDOWN) {
             int step = 6;
-            int total = catalog_count + 1;
+            int total = catalog_total_entries();
             catalog_index += step;
             if (catalog_index > total - 1) catalog_index = total - 1;
             return 1;
@@ -1542,43 +1760,10 @@ int list_pgn_files(const char *dir, char ***out_files) {
     char **files = NULL;
     int count = 0;
     int cap = 0;
-
-#ifdef _WIN32
-    char *search = join_path(dir, "*");
-    if (!search) return -1;
-    WIN32_FIND_DATAA data;
-    HANDLE h = FindFirstFileA(search, &data);
-    free(search);
-    if (h == INVALID_HANDLE_VALUE) return -1;
-    do {
-        if (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
-        if (!has_pgn_extension(data.cFileName)) continue;
-        if (!push_string(&files, &count, &cap, data.cFileName)) {
-            FindClose(h);
-            free_string_list(files, count);
-            return -1;
-        }
-    } while (FindNextFileA(h, &data));
-    FindClose(h);
-#else
-    DIR *d = opendir(dir);
-    if (!d) return -1;
-    struct dirent *ent;
-    while ((ent = readdir(d)) != NULL) {
-        if (ent->d_name[0] == '.') continue;
-#ifdef DT_DIR
-        if (ent->d_type == DT_DIR) continue;
-#endif
-        if (!has_pgn_extension(ent->d_name)) continue;
-        if (!push_string(&files, &count, &cap, ent->d_name)) {
-            closedir(d);
-            free_string_list(files, count);
-            return -1;
-        }
+    if (list_pgn_files_recursive(dir, dir, &files, &count, &cap) < 0) {
+        free_string_list(files, count);
+        return -1;
     }
-    closedir(d);
-#endif
-
     *out_files = files;
     return count;
 }
@@ -1610,6 +1795,105 @@ int choose_random_selection(const char *games_dir, GameSelection *out_sel) {
     out_sel->path = path;
     out_sel->game_index = -1;
     return 1;
+}
+
+static int relpath_from_base(const char *base, const char *path, char *out, size_t out_size) {
+    size_t base_len = strlen(base);
+    const char *p = path;
+    if (strncmp(path, base, base_len) == 0) {
+        p = path + base_len;
+        if (*p == '\\' || *p == '/') p++;
+    }
+    if (strlen(p) + 1 > out_size) return 0;
+    strcpy(out, p);
+    return 1;
+}
+
+static int list_pgn_files_recursive(const char *dir, const char *base,
+                                    char ***out_files, int *count, int *cap) {
+#ifdef _WIN32
+    char *search = join_path(dir, "*");
+    if (!search) return -1;
+    WIN32_FIND_DATAA data;
+    HANDLE h = FindFirstFileA(search, &data);
+    free(search);
+    if (h == INVALID_HANDLE_VALUE) return -1;
+    do {
+        if (strcmp(data.cFileName, ".") == 0 || strcmp(data.cFileName, "..") == 0) continue;
+        char *full = join_path(dir, data.cFileName);
+        if (!full) {
+            FindClose(h);
+            return -1;
+        }
+        if (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            if (list_pgn_files_recursive(full, base, out_files, count, cap) < 0) {
+                free(full);
+                FindClose(h);
+                return -1;
+            }
+        } else if (has_pgn_extension(data.cFileName)) {
+            char relbuf[1024];
+            if (!relpath_from_base(base, full, relbuf, sizeof(relbuf))) {
+                free(full);
+                FindClose(h);
+                return -1;
+            }
+            if (!push_string(out_files, count, cap, relbuf)) {
+                free(full);
+                FindClose(h);
+                return -1;
+            }
+        }
+        free(full);
+    } while (FindNextFileA(h, &data));
+    FindClose(h);
+#else
+    DIR *d = opendir(dir);
+    if (!d) return -1;
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL) {
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
+        char *full = join_path(dir, ent->d_name);
+        if (!full) {
+            closedir(d);
+            return -1;
+        }
+        int is_dir = 0;
+#ifdef DT_DIR
+        if (ent->d_type == DT_DIR) is_dir = 1;
+        if (ent->d_type == DT_UNKNOWN)
+#endif
+        {
+            DIR *probe = opendir(full);
+            if (probe) {
+                is_dir = 1;
+                closedir(probe);
+            }
+        }
+        if (is_dir) {
+            if (list_pgn_files_recursive(full, base, out_files, count, cap) < 0) {
+                free(full);
+                closedir(d);
+                return -1;
+            }
+        } else if (has_pgn_extension(ent->d_name)) {
+            char relbuf[1024];
+            if (!relpath_from_base(base, full, relbuf, sizeof(relbuf))) {
+                free(full);
+                closedir(d);
+                return -1;
+            }
+            if (!push_string(out_files, count, cap, relbuf)) {
+                free(full);
+                closedir(d);
+                return -1;
+            }
+        }
+        free(full);
+    }
+    closedir(d);
+#endif
+    return 0;
 }
 
 int parse_tag_value(const char *line, const char *tag, char *out, size_t out_size) {
