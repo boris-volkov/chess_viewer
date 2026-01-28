@@ -19,7 +19,6 @@ Who knows how fruitful... but I've personally found it surprisingly entertaining
 1. Download the latest `chess_viewer-win64.zip` from GitHub Releases.
 2. Unzip it anywhere.
 3. Run `chess_viewer.exe`.
-4. You can always add or remove pgn files from the games folder.
 
 The zip already includes the required DLLs plus `games/` and `pieces/`, so no extra installs are needed.
 

@@ -38,6 +38,7 @@
 #define GAME_NAV_NONE 0
 #define GAME_NAV_NEXT 1
 #define GAME_NAV_RESTART 2
+#define GAME_NAV_SELECT 3
 
 #ifdef _WIN32
 #define PATH_SEP '\\'
@@ -54,6 +55,7 @@ SDL_Texture *piece_textures[256] = {NULL};
 char current_white_name[NAME_LEN] = "White";
 char current_black_name[NAME_LEN] = "Black";
 char current_game_year[YEAR_LEN] = "";
+const char *games_dir_root = DEFAULT_GAMES_DIR;
 int show_loser_king = 0;
 int loser_is_white = 0;
 float loser_king_angle = 180.0f;
@@ -70,6 +72,13 @@ int guess_mode = 0;
 int guess_score = 0;
 int turn_is_white = 1;
 int game_nav_request = GAME_NAV_NONE;
+int catalog_active = 0;
+int catalog_selection_made = 0;
+char **catalog_files = NULL;
+int catalog_count = 0;
+int catalog_index = 0;
+int catalog_scroll = 0;
+char *forced_pgn_path = NULL;
 int analysis_saved_dim = 0;
 int analysis_saved_show_loser_king = 0;
 int analysis_saved_show_draw_kings = 0;
@@ -114,6 +123,14 @@ int adjust_move_delay(int delta_ms, Uint32 now);
 void render_speed_label(const BoardView *view);
 void render_help_overlay(const BoardView *view);
 void render_guess_score(const BoardView *view);
+void render_catalog_overlay(const BoardView *view);
+void catalog_free(void);
+void catalog_open(const char *games_dir);
+void catalog_select(const char *games_dir);
+int handle_catalog_event(const SDL_Event *e, const char *games_dir);
+void free_string_list(char **items, int count);
+char *join_path(const char *dir, const char *name);
+int list_pgn_files(const char *dir, char ***out_files);
 void set_cursor_visible(int visible);
 void note_mouse_activity(Uint32 now);
 void update_cursor_auto_hide(Uint32 now);
@@ -354,6 +371,7 @@ void render_help_overlay(const BoardView *view) {
         "  N: NEXT GAME",
         "  P: PREV GAME",
         "  R: RESTART GAME",
+        "  C: OPEN CATALOG",
         "  ESC: TOGGLE HELP",
         "  F: FLIP VIEW",
         "  UP/DOWN: SPEED",
@@ -369,7 +387,11 @@ void render_help_overlay(const BoardView *view) {
         "  LEFT DRAG: MOVE PIECE",
         "GUESS MODE (G):",
         "  LEFT DRAG: GUESS MOVE",
-        "  SCORE: 1 POINT IF MATCH"
+        "  SCORE: 1 POINT IF MATCH",
+        "CATALOG (C):",
+        "  UP/DOWN: SELECT FILE",
+        "  ENTER: OPEN",
+        "  ESC: CLOSE"
     };
     int line_count = (int)(sizeof(lines) / sizeof(lines[0]));
 
@@ -401,6 +423,170 @@ void render_help_overlay(const BoardView *view) {
         draw_text(text_x, text_y, scale, lines[i], text_color);
         text_y += text_h + line_gap;
     }
+}
+
+static int filename_cmp(const void *a, const void *b) {
+    const char *sa = *(const char *const *)a;
+    const char *sb = *(const char *const *)b;
+#ifdef _WIN32
+    return _stricmp(sa, sb);
+#else
+    return strcasecmp(sa, sb);
+#endif
+}
+
+void catalog_free(void) {
+    if (catalog_files) {
+        free_string_list(catalog_files, catalog_count);
+    }
+    catalog_files = NULL;
+    catalog_count = 0;
+    catalog_index = 0;
+    catalog_scroll = 0;
+    catalog_active = 0;
+}
+
+void catalog_open(const char *games_dir) {
+    if (catalog_active) return;
+    catalog_free();
+    catalog_count = list_pgn_files(games_dir, &catalog_files);
+    if (catalog_count < 0) {
+        catalog_files = NULL;
+        catalog_count = 0;
+        return;
+    }
+    if (catalog_count > 1) {
+        qsort(catalog_files, (size_t)catalog_count, sizeof(catalog_files[0]), filename_cmp);
+    }
+    catalog_active = 1;
+    catalog_selection_made = 0;
+    catalog_index = 0;
+    catalog_scroll = 0;
+    if (forced_pgn_path) {
+        for (int i = 0; i < catalog_count; i++) {
+            if (strstr(forced_pgn_path, catalog_files[i])) {
+                catalog_index = i + 1;
+                break;
+            }
+        }
+    }
+}
+
+void catalog_select(const char *games_dir) {
+    if (!catalog_active) return;
+    if (catalog_index == 0) {
+        free(forced_pgn_path);
+        forced_pgn_path = NULL;
+    } else {
+        int file_index = catalog_index - 1;
+        if (file_index >= 0 && file_index < catalog_count) {
+            char *path = join_path(games_dir, catalog_files[file_index]);
+            if (path) {
+                free(forced_pgn_path);
+                forced_pgn_path = path;
+            }
+        }
+    }
+    catalog_selection_made = 1;
+    catalog_active = 0;
+}
+
+void render_catalog_overlay(const BoardView *view) {
+    if (!catalog_active) return;
+
+    const char *title = "CATALOG";
+    const char *random_label = "[RANDOM FILE]";
+    int total_entries = catalog_count + 1;
+
+    int scale = (view->square >= 60) ? 3 : 2;
+    int line_gap = (scale >= 3) ? 4 : 3;
+    int text_h = 7 * scale;
+    int pad = (scale >= 3) ? 10 : 8;
+    int header_gap = line_gap + (scale >= 3 ? 4 : 2);
+
+    int max_w = text_width_px(title, scale);
+    int random_w = text_width_px(random_label, scale);
+    if (random_w > max_w) max_w = random_w;
+    for (int i = 0; i < catalog_count; i++) {
+        int w = text_width_px(catalog_files[i], scale);
+        if (w > max_w) max_w = w;
+    }
+
+    int available_h = view->screen_h - pad * 4 - text_h - header_gap;
+    int line_h = text_h + line_gap;
+    int max_lines = (available_h > 0) ? (available_h / line_h) : 0;
+    if (max_lines < 4) max_lines = 4;
+    if (max_lines > total_entries) max_lines = total_entries;
+
+    if (catalog_index < catalog_scroll) catalog_scroll = catalog_index;
+    if (catalog_index >= catalog_scroll + max_lines) {
+        catalog_scroll = catalog_index - max_lines + 1;
+    }
+
+    int list_h = max_lines * line_h - line_gap;
+    int box_w = max_w + pad * 2;
+    int box_h = text_h + header_gap + list_h + pad * 2;
+    int x = (view->screen_w - box_w) / 2;
+    int y = (view->screen_h - box_h) / 2;
+
+    SDL_Rect bg = {x, y, box_w, box_h};
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(renderer, 80, 80, 80, 190);
+    SDL_RenderFillRect(renderer, &bg);
+
+    SDL_Color text_color = {255, 255, 255, 255};
+    int text_x = x + pad;
+    int text_y = y + pad;
+    draw_text(text_x, text_y, scale, title, text_color);
+    text_y += text_h + header_gap;
+
+    for (int i = 0; i < max_lines; i++) {
+        int idx = catalog_scroll + i;
+        if (idx >= total_entries) break;
+        const char *label = (idx == 0) ? random_label : catalog_files[idx - 1];
+        if (idx == catalog_index) {
+            SDL_Rect hi = {text_x - 3, text_y - 3, max_w + 6, text_h + 6};
+            SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+            SDL_SetRenderDrawColor(renderer, 40, 120, 255, 190);
+            SDL_RenderFillRect(renderer, &hi);
+        }
+        draw_text(text_x, text_y, scale, label, text_color);
+        text_y += line_h;
+    }
+}
+
+int handle_catalog_event(const SDL_Event *e, const char *games_dir) {
+    if (!catalog_active) return 0;
+    if (e->type == SDL_KEYDOWN) {
+        SDL_Keycode key = e->key.keysym.sym;
+        if (key == SDLK_ESCAPE || key == SDLK_c) {
+            catalog_active = 0;
+            return 1;
+        } else if (key == SDLK_UP) {
+            if (catalog_index > 0) catalog_index--;
+            return 1;
+        } else if (key == SDLK_DOWN) {
+            int total = catalog_count + 1;
+            if (catalog_index < total - 1) catalog_index++;
+            return 1;
+        } else if (key == SDLK_PAGEUP) {
+            int step = 6;
+            catalog_index -= step;
+            if (catalog_index < 0) catalog_index = 0;
+            return 1;
+        } else if (key == SDLK_PAGEDOWN) {
+            int step = 6;
+            int total = catalog_count + 1;
+            catalog_index += step;
+            if (catalog_index > total - 1) catalog_index = total - 1;
+            return 1;
+        } else if (key == SDLK_RETURN || key == SDLK_KP_ENTER) {
+            catalog_select(games_dir);
+            game_nav_request = GAME_NAV_SELECT;
+            return 1;
+        }
+    }
+    return 1;
 }
 
 void render_player_labels(const BoardView *view) {
@@ -828,6 +1014,7 @@ void render_board(const BoardView *view, const Overlay *overlay) {
     render_player_labels(view);
     render_guess_score(view);
     render_help_overlay(view);
+    render_catalog_overlay(view);
 
     SDL_RenderPresent(renderer);
 }
@@ -1101,6 +1288,14 @@ int animate_move(const Move *m, int is_white) {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
             note_mouse_activity_event(&e);
+            if (handle_catalog_event(&e, games_dir_root)) {
+                draw_board();
+        if (game_nav_request == GAME_NAV_SELECT && catalog_selection_made) {
+            catalog_selection_made = 0;
+            return 1;
+        }
+                continue;
+            }
             if (e.type == SDL_QUIT) {
                 return 1;
             } else if (e.type == SDL_KEYDOWN) {
@@ -1117,6 +1312,9 @@ int animate_move(const Move *m, int is_white) {
                 } else if (key == SDLK_r) {
                     game_nav_request = GAME_NAV_RESTART;
                     return 1;
+                } else if (key == SDLK_c) {
+                    catalog_open(games_dir_root);
+                    draw_board();
                 } else if (key == SDLK_ESCAPE) {
                     show_help = !show_help;
                 } else if (key == SDLK_SPACE) {
@@ -1630,6 +1828,14 @@ int play_game(const char *move_buffer, const char *header_result) {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
             note_mouse_activity_event(&e);
+            if (handle_catalog_event(&e, games_dir_root)) {
+                draw_board();
+        if (game_nav_request == GAME_NAV_SELECT && catalog_selection_made) {
+            catalog_selection_made = 0;
+            quit = 1;
+        }
+                continue;
+            }
             if (e.type == SDL_QUIT) {
                 quit = 1;
             } else if (e.type == SDL_KEYDOWN) {
@@ -1646,6 +1852,9 @@ int play_game(const char *move_buffer, const char *header_result) {
                 } else if (key == SDLK_r) {
                     game_nav_request = GAME_NAV_RESTART;
                     quit = 1;
+                } else if (key == SDLK_c) {
+                    catalog_open(games_dir_root);
+                    draw_board();
                 } else if (key == SDLK_ESCAPE) {
                     show_help = !show_help;
                     draw_board();
@@ -1817,6 +2026,14 @@ int play_game(const char *move_buffer, const char *header_result) {
             draw_board();
         }
 
+        if (catalog_active) {
+            BoardView view;
+            get_board_view(&view);
+            render_board(&view, NULL);
+            SDL_Delay(10);
+            continue;
+        }
+
         if (guess_pending && index < move_count) {
             int is_white = (index % 2 == 0);
             Move expected = {0};
@@ -1926,6 +2143,14 @@ int play_game(const char *move_buffer, const char *header_result) {
                 SDL_Event e;
                 while (SDL_PollEvent(&e)) {
                     note_mouse_activity_event(&e);
+                    if (handle_catalog_event(&e, games_dir_root)) {
+                        draw_board();
+        if (game_nav_request == GAME_NAV_SELECT && catalog_selection_made) {
+            catalog_selection_made = 0;
+            quit = 1;
+        }
+                        continue;
+                    }
                     if (e.type == SDL_QUIT) {
                         quit = 1;
                     } else if (e.type == SDL_KEYDOWN) {
@@ -1942,6 +2167,9 @@ int play_game(const char *move_buffer, const char *header_result) {
                         } else if (key == SDLK_r) {
                             game_nav_request = GAME_NAV_RESTART;
                             quit = 1;
+                        } else if (key == SDLK_c) {
+                            catalog_open(games_dir_root);
+                            draw_board();
                         } else if (key == SDLK_ESCAPE) {
                             show_help = !show_help;
                         } else if (key == SDLK_UP || key == SDLK_DOWN) {
@@ -1976,6 +2204,14 @@ int play_game(const char *move_buffer, const char *header_result) {
                 SDL_Event e;
                 while (SDL_PollEvent(&e)) {
                     note_mouse_activity_event(&e);
+                    if (handle_catalog_event(&e, games_dir_root)) {
+                        draw_board();
+                        if (game_nav_request == GAME_NAV_SELECT && catalog_selection_made) {
+                            catalog_selection_made = 0;
+                            quit = 1;
+                        }
+                        continue;
+                    }
                     if (e.type == SDL_QUIT) {
                         quit = 1;
                     } else if (e.type == SDL_KEYDOWN) {
@@ -1992,6 +2228,9 @@ int play_game(const char *move_buffer, const char *header_result) {
                         } else if (key == SDLK_r) {
                             game_nav_request = GAME_NAV_RESTART;
                             quit = 1;
+                        } else if (key == SDLK_c) {
+                            catalog_open(games_dir_root);
+                            draw_board();
                         } else if (key == SDLK_ESCAPE) {
                             show_help = !show_help;
                         } else if (key == SDLK_UP || key == SDLK_DOWN) {
@@ -2036,6 +2275,14 @@ int play_game(const char *move_buffer, const char *header_result) {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
             note_mouse_activity_event(&e);
+            if (handle_catalog_event(&e, games_dir_root)) {
+                draw_board();
+                        if (game_nav_request == GAME_NAV_SELECT && catalog_selection_made) {
+                            catalog_selection_made = 0;
+                            quit = 1;
+                        }
+                continue;
+            }
             if (e.type == SDL_QUIT) {
                 quit = 1;
             } else if (e.type == SDL_KEYDOWN) {
@@ -2052,6 +2299,9 @@ int play_game(const char *move_buffer, const char *header_result) {
                 } else if (key == SDLK_r) {
                     game_nav_request = GAME_NAV_RESTART;
                     quit = 1;
+                } else if (key == SDLK_c) {
+                    catalog_open(games_dir_root);
+                    draw_board();
                 } else if (key == SDLK_ESCAPE) {
                     show_help = !show_help;
                     draw_board();
@@ -2205,6 +2455,7 @@ int main(int argc, char *argv[]) {
     const char *games_dir = DEFAULT_GAMES_DIR;
     (void)argc;
     (void)argv;
+    games_dir_root = games_dir;
 
     // Initialize SDL
     if (SDL_Init(SDL_INIT_VIDEO) < 0 || !(IMG_Init(IMG_INIT_PNG) & IMG_INIT_PNG)) {
@@ -2239,7 +2490,16 @@ int main(int argc, char *argv[]) {
     while (!quit) {
         if (need_new_selection) {
             GameSelection sel = {0};
-            if (!choose_random_selection(games_dir, &sel)) {
+            if (forced_pgn_path) {
+                sel.path = copy_string(forced_pgn_path);
+                sel.game_index = -1;
+            } else {
+                if (!choose_random_selection(games_dir, &sel)) {
+                    printf("No PGN files found in %s\n", games_dir);
+                    break;
+                }
+            }
+            if (!sel.path) {
                 printf("No PGN files found in %s\n", games_dir);
                 break;
             }
@@ -2308,6 +2568,18 @@ int main(int argc, char *argv[]) {
             quit = 1;
             break;
         }
+        if (nav == GAME_NAV_SELECT) {
+            for (int i = 0; i < history_count; i++) {
+                free(history[i].path);
+            }
+            history_cap = 0;
+            free(history);
+            history = NULL;
+            history_count = 0;
+            history_pos = -1;
+            need_new_selection = 1;
+            continue;
+        }
         if (nav == GAME_NAV_NEXT) {
             if (history_pos < history_count - 1) {
                 history_pos++;
@@ -2333,6 +2605,8 @@ int main(int argc, char *argv[]) {
         free(history[i].path);
     }
     free(history);
+    catalog_free();
+    free(forced_pgn_path);
 
     // Cleanup
     for (int i = 0; i < 256; i++) {
