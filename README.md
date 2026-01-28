@@ -1,6 +1,6 @@
 # chess_viewer
 
-Minimal SDL2 PGN chess viewer that plays random games from the `games/` folder.
+Minimal SDL2 PGN chess viewer that plays through random games from the `games/` folder.
 
 Inspired by Willy Hendriks in *Move First, Think Later*:
 
@@ -8,16 +8,28 @@ Inspired by Willy Hendriks in *Move First, Think Later*:
 >
 >A form of training that refrains from what can be called 'conceptual' learning, is the following: you let your chess program play instructive games at a set speed (say five to ten seconds per move), without commentary, explanations or lines. Headphones with some nice background music are allowed ... the idea - watching without the necessity of 'conscious' processing - can be fruitful.
 
+Who knows how fruitful... but I've personally found it surprisingly entertaining and interesting to just watch a high quality chess game flow by without anybody yapping about it. 
 
+## What it does
+- Plays back PGN games on a full‑screen SDL board.
+- Loads PNG pieces from `pieces/` and games from `games/`.
+- Supports pause, step, analysis mode, and guess‑the‑move mode.
 
+## Quick start (Windows release zip)
+1. Download the latest `chess_viewer-win64.zip` from GitHub Releases.
+2. Unzip it anywhere.
+3. Run `chess_viewer.exe`.
+4. You can always add or remove pgn files from the games folder.
 
-## Requirements
+The zip already includes the required DLLs plus `games/` and `pieces/`, so no extra installs are needed.
+
+## Build from source
+
+### Requirements
 - C compiler (MSVC, clang, or gcc)
 - CMake 3.16+
 - SDL2
 - SDL2_image
-
-## Build
 
 ### Windows (vcpkg)
 1. Install vcpkg, then run:
@@ -66,9 +78,9 @@ Run from the repo root (or keep `games/` and `pieces/` next to the executable):
 
 The program loads a random PGN from `games/` and PNG assets from `pieces/`.
 
-## Windows Binary Releases
-Professional standard is to keep binaries out of git and publish them via GitHub Releases.
-Package a Windows zip with:
+## Releases and packaging
+Windows binaries are published via GitHub Releases to keep the repo clean.
+The release zip contains:
 - `chess_viewer.exe`
 - SDL2/SDL2_image runtime DLLs and their dependencies
 - `games/` and `pieces/`
