@@ -61,6 +61,8 @@ SDL_Texture *piece_textures[256] = {NULL};
 char current_white_name[NAME_LEN] = "White";
 char current_black_name[NAME_LEN] = "Black";
 char current_game_year[YEAR_LEN] = "";
+char current_white_elo[NAME_LEN] = "";
+char current_black_elo[NAME_LEN] = "";
 const char *games_dir_root = DEFAULT_GAMES_DIR;
 int show_loser_king = 0;
 int loser_is_white = 0;
@@ -78,6 +80,7 @@ int guess_mode = 0;
 int guess_score = 0;
 int turn_is_white = 1;
 int game_nav_request = GAME_NAV_NONE;
+int show_elos = 0;
 int catalog_active = 0;
 int catalog_selection_made = 0;
 CatalogEntry *catalog_entries = NULL;
@@ -384,6 +387,7 @@ void render_help_overlay(const BoardView *view) {
         "  P: PREV GAME",
         "  R: RESTART GAME",
         "  C: OPEN CATALOG",
+        "  E: TOGGLE ELO",
         "  ESC: TOGGLE HELP",
         "  F: FLIP VIEW",
         "  UP/DOWN: SPEED",
@@ -820,6 +824,16 @@ void render_player_labels(const BoardView *view) {
 
     const char *white_name = (current_white_name[0] != '\0') ? current_white_name : "White";
     const char *black_name = (current_black_name[0] != '\0') ? current_black_name : "Black";
+    char white_label[NAME_LEN * 2] = "";
+    char black_label[NAME_LEN * 2] = "";
+    if (show_elos && current_white_elo[0] != '\0') {
+        snprintf(white_label, sizeof(white_label), "%s (%s)", white_name, current_white_elo);
+        white_name = white_label;
+    }
+    if (show_elos && current_black_elo[0] != '\0') {
+        snprintf(black_label, sizeof(black_label), "%s (%s)", black_name, current_black_elo);
+        black_name = black_label;
+    }
     int top_is_white = view_from_white ? 0 : 1;
     const char *top_name = top_is_white ? white_name : black_name;
     const char *bottom_name = top_is_white ? black_name : white_name;
@@ -1508,10 +1522,10 @@ int animate_move(const Move *m, int is_white) {
             note_mouse_activity_event(&e);
             if (handle_catalog_event(&e, games_dir_root)) {
                 draw_board();
-        if (game_nav_request == GAME_NAV_SELECT && catalog_selection_made) {
-            catalog_selection_made = 0;
-            return 1;
-        }
+                if (game_nav_request == GAME_NAV_SELECT && catalog_selection_made) {
+                    catalog_selection_made = 0;
+                    return 1;
+                }
                 continue;
             }
             if (e.type == SDL_QUIT) {
@@ -1532,6 +1546,9 @@ int animate_move(const Move *m, int is_white) {
                     return 1;
                 } else if (key == SDLK_c) {
                     catalog_open(games_dir_root);
+                    draw_board();
+                } else if (key == SDLK_e) {
+                    show_elos = !show_elos;
                     draw_board();
                 } else if (key == SDLK_ESCAPE) {
                     show_help = !show_help;
@@ -1698,6 +1715,8 @@ typedef struct {
     char *moves;
     char white[NAME_LEN];
     char black[NAME_LEN];
+    char white_elo[NAME_LEN];
+    char black_elo[NAME_LEN];
     char year[YEAR_LEN];
     char result[RESULT_LEN];
 } Game;
@@ -1963,7 +1982,9 @@ void set_last_name(char *out, size_t out_size, const char *full) {
 }
 
 int push_game(Game **games, int *count, int *cap, const char *move_buffer,
-              const char *white, const char *black, const char *year, const char *result) {
+              const char *white, const char *black,
+              const char *white_elo, const char *black_elo,
+              const char *year, const char *result) {
     if (*count >= *cap) {
         int new_cap = (*cap == 0) ? 16 : (*cap * 2);
         Game *new_games = (Game *)realloc(*games, (size_t)new_cap * sizeof(Game));
@@ -1977,6 +1998,10 @@ int push_game(Game **games, int *count, int *cap, const char *move_buffer,
     (*games)[*count].white[NAME_LEN - 1] = '\0';
     strncpy((*games)[*count].black, (black && black[0]) ? black : "Black", NAME_LEN - 1);
     (*games)[*count].black[NAME_LEN - 1] = '\0';
+    strncpy((*games)[*count].white_elo, (white_elo && white_elo[0]) ? white_elo : "", NAME_LEN - 1);
+    (*games)[*count].white_elo[NAME_LEN - 1] = '\0';
+    strncpy((*games)[*count].black_elo, (black_elo && black_elo[0]) ? black_elo : "", NAME_LEN - 1);
+    (*games)[*count].black_elo[NAME_LEN - 1] = '\0';
     strncpy((*games)[*count].year, (year && year[0]) ? year : "", YEAR_LEN - 1);
     (*games)[*count].year[YEAR_LEN - 1] = '\0';
     strncpy((*games)[*count].result, (result && result[0]) ? result : "", RESULT_LEN - 1);
@@ -2002,6 +2027,8 @@ int load_games(FILE *fp, Game **out_games) {
     char current_white[NAME_LEN] = "";
     char current_black[NAME_LEN] = "";
     char current_date[NAME_LEN] = "";
+    char current_white_elo[NAME_LEN] = "";
+    char current_black_elo[NAME_LEN] = "";
     char current_year[YEAR_LEN] = "";
     char current_result[RESULT_LEN] = "";
     int in_game = 0;
@@ -2013,12 +2040,16 @@ int load_games(FILE *fp, Game **out_games) {
         if (strncmp(trim, "[Event", 6) == 0) {  // New game starts
             if (in_game && move_buffer[0] != '\0') {
                 if (!push_game(&games, &count, &cap, move_buffer,
-                               current_white, current_black, current_year, current_result)) goto error;
+                               current_white, current_black,
+                               current_white_elo, current_black_elo,
+                               current_year, current_result)) goto error;
                 move_buffer[0] = '\0';
             }
             current_white[0] = '\0';
             current_black[0] = '\0';
             current_date[0] = '\0';
+            current_white_elo[0] = '\0';
+            current_black_elo[0] = '\0';
             current_year[0] = '\0';
             current_result[0] = '\0';
             in_game = 1;
@@ -2027,6 +2058,8 @@ int load_games(FILE *fp, Game **out_games) {
         if (in_game && trim[0] == '[') {
             parse_tag_value(trim, "White", current_white, sizeof(current_white));
             parse_tag_value(trim, "Black", current_black, sizeof(current_black));
+            parse_tag_value(trim, "WhiteElo", current_white_elo, sizeof(current_white_elo));
+            parse_tag_value(trim, "BlackElo", current_black_elo, sizeof(current_black_elo));
             if (parse_tag_value(trim, "Date", current_date, sizeof(current_date))) {
                 extract_year(current_year, sizeof(current_year), current_date);
             }
@@ -2041,7 +2074,9 @@ int load_games(FILE *fp, Game **out_games) {
 
     if (in_game && move_buffer[0] != '\0') {
         if (!push_game(&games, &count, &cap, move_buffer,
-                       current_white, current_black, current_year, current_result)) goto error;
+                       current_white, current_black,
+                       current_white_elo, current_black_elo,
+                       current_year, current_result)) goto error;
     }
 
     *out_games = games;
@@ -2138,6 +2173,9 @@ int play_game(const char *move_buffer, const char *header_result) {
                     quit = 1;
                 } else if (key == SDLK_c) {
                     catalog_open(games_dir_root);
+                    draw_board();
+                } else if (key == SDLK_e) {
+                    show_elos = !show_elos;
                     draw_board();
                 } else if (key == SDLK_ESCAPE) {
                     show_help = !show_help;
@@ -2429,10 +2467,10 @@ int play_game(const char *move_buffer, const char *header_result) {
                     note_mouse_activity_event(&e);
                     if (handle_catalog_event(&e, games_dir_root)) {
                         draw_board();
-        if (game_nav_request == GAME_NAV_SELECT && catalog_selection_made) {
-            catalog_selection_made = 0;
-            quit = 1;
-        }
+                        if (game_nav_request == GAME_NAV_SELECT && catalog_selection_made) {
+                            catalog_selection_made = 0;
+                            quit = 1;
+                        }
                         continue;
                     }
                     if (e.type == SDL_QUIT) {
@@ -2453,6 +2491,9 @@ int play_game(const char *move_buffer, const char *header_result) {
                             quit = 1;
                         } else if (key == SDLK_c) {
                             catalog_open(games_dir_root);
+                            draw_board();
+                        } else if (key == SDLK_e) {
+                            show_elos = !show_elos;
                             draw_board();
                         } else if (key == SDLK_ESCAPE) {
                             show_help = !show_help;
@@ -2515,6 +2556,9 @@ int play_game(const char *move_buffer, const char *header_result) {
                         } else if (key == SDLK_c) {
                             catalog_open(games_dir_root);
                             draw_board();
+                        } else if (key == SDLK_e) {
+                            show_elos = !show_elos;
+                            draw_board();
                         } else if (key == SDLK_ESCAPE) {
                             show_help = !show_help;
                         } else if (key == SDLK_UP || key == SDLK_DOWN) {
@@ -2561,10 +2605,10 @@ int play_game(const char *move_buffer, const char *header_result) {
             note_mouse_activity_event(&e);
             if (handle_catalog_event(&e, games_dir_root)) {
                 draw_board();
-                        if (game_nav_request == GAME_NAV_SELECT && catalog_selection_made) {
-                            catalog_selection_made = 0;
-                            quit = 1;
-                        }
+                if (game_nav_request == GAME_NAV_SELECT && catalog_selection_made) {
+                    catalog_selection_made = 0;
+                    quit = 1;
+                }
                 continue;
             }
             if (e.type == SDL_QUIT) {
@@ -2585,6 +2629,9 @@ int play_game(const char *move_buffer, const char *header_result) {
                     quit = 1;
                 } else if (key == SDLK_c) {
                     catalog_open(games_dir_root);
+                    draw_board();
+                } else if (key == SDLK_e) {
+                    show_elos = !show_elos;
                     draw_board();
                 } else if (key == SDLK_ESCAPE) {
                     show_help = !show_help;
@@ -2837,6 +2884,10 @@ int main(int argc, char *argv[]) {
             strncpy(current_black_name, games[game_index].black, NAME_LEN - 1);
             current_black_name[NAME_LEN - 1] = '\0';
         }
+        strncpy(current_white_elo, games[game_index].white_elo, NAME_LEN - 1);
+        current_white_elo[NAME_LEN - 1] = '\0';
+        strncpy(current_black_elo, games[game_index].black_elo, NAME_LEN - 1);
+        current_black_elo[NAME_LEN - 1] = '\0';
         strncpy(current_game_year, games[game_index].year, YEAR_LEN - 1);
         current_game_year[YEAR_LEN - 1] = '\0';
         if (!keep_view) {
