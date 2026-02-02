@@ -2139,6 +2139,7 @@ int play_game(const char *move_buffer, const char *header_result) {
     int guess_to_r = -1;
     int guess_to_f = -1;
     guess_score = 0;
+    Uint32 force_redraw_until = 0;
 
     while (!quit) {
         Uint32 loop_now = SDL_GetTicks();
@@ -2356,6 +2357,15 @@ int play_game(const char *move_buffer, const char *header_result) {
             continue;
         }
 
+        if (!analysis_mode && !guess_mode && force_redraw_until != 0) {
+            Uint32 now = SDL_GetTicks();
+            if (now <= force_redraw_until) {
+                draw_board();
+            } else {
+                force_redraw_until = 0;
+            }
+        }
+
         if (guess_pending && index < move_count) {
             int is_white = (index % 2 == 0);
             Move expected = {0};
@@ -2374,6 +2384,7 @@ int play_game(const char *move_buffer, const char *header_result) {
                 index++;
                 turn_is_white = (index % 2 == 0);
                 last_move_tick = SDL_GetTicks();
+                force_redraw_until = last_move_tick + 120;
                 draw_board();
             } else {
                 printf("Failed to parse move: %s\n", moves[index]);
@@ -2435,6 +2446,7 @@ int play_game(const char *move_buffer, const char *header_result) {
                     }
                     apply_move(&m, is_white);
                     draw_board();
+                    force_redraw_until = SDL_GetTicks() + 120;
                 } else {
                     printf("Failed to parse move: %s\n", moves[index]);
                 }
