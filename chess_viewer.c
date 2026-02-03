@@ -81,6 +81,7 @@ int guess_score = 0;
 int turn_is_white = 1;
 int game_nav_request = GAME_NAV_NONE;
 int show_elos = 0;
+int uncolored_mode = 0;
 int catalog_active = 0;
 int catalog_selection_made = 0;
 CatalogEntry *catalog_entries = NULL;
@@ -388,6 +389,7 @@ void render_help_overlay(const BoardView *view) {
         "  R: RESTART GAME",
         "  C: OPEN CATALOG",
         "  E: TOGGLE ELO",
+        "  U: TOGGLE UNCOLORED",
         "  ESC: TOGGLE HELP",
         "  F: FLIP VIEW",
         "  UP/DOWN: SPEED",
@@ -1137,11 +1139,23 @@ void render_board(const BoardView *view, const Overlay *overlay) {
     SDL_SetRenderDrawColor(renderer, 50, 50, 50, 255);
     SDL_RenderClear(renderer);
 
-    SDL_Color light = analysis_mode ? (SDL_Color){215, 210, 200, 255} : (SDL_Color){210, 210, 210, 255};
-    SDL_Color dark  = analysis_mode ? (SDL_Color){155, 150, 140, 255} : (SDL_Color){150, 150, 150, 255};
+    SDL_Color light = analysis_mode ? (SDL_Color){140, 135, 125, 255} : (SDL_Color){125, 125, 125, 255};
+    SDL_Color dark  = analysis_mode ? (SDL_Color){120, 115, 105, 255} : (SDL_Color){105, 105, 105, 255};
     if (guess_mode && !analysis_mode) {
-        light = (SDL_Color){200, 220, 200, 255};
-        dark = (SDL_Color){140, 160, 140, 255};
+        light = (SDL_Color){125, 140, 125, 255};
+        dark = (SDL_Color){105, 120, 105, 255};
+    }
+    SDL_Color grid = {150, 150, 150, 255};
+    if (uncolored_mode) {
+        SDL_Color dot = light;
+        light = dark;
+        int lr = dot.r + 20;
+        int lg = dot.g + 20;
+        int lb = dot.b + 20;
+        if (lr > 255) lr = 255;
+        if (lg > 255) lg = 255;
+        if (lb > 255) lb = 255;
+        grid = (SDL_Color){(Uint8)lr, (Uint8)lg, (Uint8)lb, 255};
     }
     if (dim_board) {
         light.r = (Uint8)(light.r * 2 / 3);
@@ -1161,6 +1175,16 @@ void render_board(const BoardView *view, const Overlay *overlay) {
             board_to_screen(view, row, col, &x, &y);
             SDL_Rect rect = {x, y, view->square, view->square};
             SDL_RenderFillRect(renderer, &rect);
+            if (uncolored_mode) {
+                int dot = view->square / 6;
+                if (dot < 2) dot = 2;
+                if (dot > 5) dot = 5;
+                int cx = rect.x + rect.w / 2;
+                int cy = rect.y + rect.h / 2;
+                SDL_Rect dot_rect = {cx - dot / 2, cy - dot / 2, dot, dot};
+                SDL_SetRenderDrawColor(renderer, grid.r, grid.g, grid.b, grid.a);
+                SDL_RenderFillRect(renderer, &dot_rect);
+            }
 
     if (analysis_marks[row][col]) {
         SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
@@ -1549,6 +1573,9 @@ int animate_move(const Move *m, int is_white) {
                     draw_board();
                 } else if (key == SDLK_e) {
                     show_elos = !show_elos;
+                    draw_board();
+                } else if (key == SDLK_u) {
+                    uncolored_mode = !uncolored_mode;
                     draw_board();
                 } else if (key == SDLK_ESCAPE) {
                     show_help = !show_help;
@@ -2178,6 +2205,9 @@ int play_game(const char *move_buffer, const char *header_result) {
                 } else if (key == SDLK_e) {
                     show_elos = !show_elos;
                     draw_board();
+                } else if (key == SDLK_u) {
+                    uncolored_mode = !uncolored_mode;
+                    draw_board();
                 } else if (key == SDLK_ESCAPE) {
                     show_help = !show_help;
                     draw_board();
@@ -2507,6 +2537,9 @@ int play_game(const char *move_buffer, const char *header_result) {
                         } else if (key == SDLK_e) {
                             show_elos = !show_elos;
                             draw_board();
+                        } else if (key == SDLK_u) {
+                            uncolored_mode = !uncolored_mode;
+                            draw_board();
                         } else if (key == SDLK_ESCAPE) {
                             show_help = !show_help;
                         } else if (key == SDLK_UP || key == SDLK_DOWN) {
@@ -2570,6 +2603,9 @@ int play_game(const char *move_buffer, const char *header_result) {
                             draw_board();
                         } else if (key == SDLK_e) {
                             show_elos = !show_elos;
+                            draw_board();
+                        } else if (key == SDLK_u) {
+                            uncolored_mode = !uncolored_mode;
                             draw_board();
                         } else if (key == SDLK_ESCAPE) {
                             show_help = !show_help;
@@ -2644,6 +2680,9 @@ int play_game(const char *move_buffer, const char *header_result) {
                     draw_board();
                 } else if (key == SDLK_e) {
                     show_elos = !show_elos;
+                    draw_board();
+                } else if (key == SDLK_u) {
+                    uncolored_mode = !uncolored_mode;
                     draw_board();
                 } else if (key == SDLK_ESCAPE) {
                     show_help = !show_help;
