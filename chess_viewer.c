@@ -9,6 +9,7 @@
 #include <string.h>
 #include <ctype.h>
 #include <time.h>
+#include <math.h>
 #ifdef _WIN32
 #include <windows.h>
 #else
@@ -35,6 +36,8 @@
 #define KING_FLIP_MS 800
 #define SPEED_MESSAGE_MS 1500
 #define CURSOR_IDLE_MS 2500
+#define FEN_SAVE_PATH "saved_positions.fen"
+#define FEN_MESSAGE_MS 1500
 #define GAME_NAV_PREV -1
 #define GAME_NAV_NONE 0
 #define GAME_NAV_NEXT 1
@@ -74,6 +77,7 @@ int dim_board = 0;
 int pause_buffered = 0;
 int move_delay_ms = MOVE_DELAY_MS;
 Uint32 speed_message_until = 0;
+Uint32 fen_message_until = 0;
 int analysis_mode = 0;
 int show_help = 0;
 int guess_mode = 0;
@@ -82,6 +86,13 @@ int turn_is_white = 1;
 int game_nav_request = GAME_NAV_NONE;
 int show_elos = 0;
 int uncolored_mode = 0;
+int show_defense_lines = 0;
+int white_king_moved = 0;
+int white_rook_a_moved = 0;
+int white_rook_h_moved = 0;
+int black_king_moved = 0;
+int black_rook_a_moved = 0;
+int black_rook_h_moved = 0;
 int catalog_active = 0;
 int catalog_selection_made = 0;
 CatalogEntry *catalog_entries = NULL;
@@ -103,6 +114,7 @@ int mark_last_r = -1;
 int mark_last_f = -1;
 int cursor_visible = 1;
 Uint32 last_mouse_activity = 0;
+char fen_message[64] = "FEN saved";
 
 typedef struct {
     int square;
@@ -133,6 +145,7 @@ int update_mark_drag(const BoardView *view, int x, int y);
 void end_mark_drag(void);
 int adjust_move_delay(int delta_ms, Uint32 now);
 void render_speed_label(const BoardView *view);
+void render_fen_label(const BoardView *view);
 void render_help_overlay(const BoardView *view);
 void render_guess_score(const BoardView *view);
 void render_catalog_overlay(const BoardView *view);
@@ -152,6 +165,12 @@ void set_cursor_visible(int visible);
 void note_mouse_activity(Uint32 now);
 void update_cursor_auto_hide(Uint32 now);
 void note_mouse_activity_event(const SDL_Event *e);
+int piece_attacks_square(char piece, int from_r, int from_f, int to_r, int to_f, int is_white);
+void draw_thick_line(int x1, int y1, int x2, int y2, int thickness, SDL_Color color);
+void render_defense_lines(const BoardView *view);
+void reset_castling_state(void);
+void build_fen(char *out, size_t out_size);
+void save_fen_snapshot(const char *path);
 
 static int is_white_piece(char piece) {
     return (piece >= 'A' && piece <= 'Z');
@@ -331,6 +350,36 @@ void render_speed_label(const BoardView *view) {
     draw_text(x, y, scale, buf, text_color);
 }
 
+void render_fen_label(const BoardView *view) {
+    if (fen_message_until == 0) return;
+    Uint32 now = SDL_GetTicks();
+    if (now >= fen_message_until) {
+        fen_message_until = 0;
+        return;
+    }
+
+    const char *msg = (fen_message[0] != '\0') ? fen_message : "FEN saved";
+    int scale = (view->square >= 60) ? 3 : 2;
+    int margin = (view->square >= 60) ? 16 : 8;
+    int text_w = text_width_px(msg, scale);
+    int text_h = 7 * scale;
+    int x = view->offset_x + (view->board_px - text_w) / 2;
+    if (x < view->offset_x + margin) x = view->offset_x + margin;
+    int y = view->offset_y + margin;
+    int pad = (scale >= 3) ? 4 : 3;
+    if (speed_message_until != 0 && now < speed_message_until) {
+        y += text_h + pad * 2 + 4;
+    }
+
+    SDL_Rect bg = {x - pad, y - pad, text_w + pad * 2, text_h + pad * 2};
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(renderer, 80, 80, 80, 180);
+    SDL_RenderFillRect(renderer, &bg);
+
+    SDL_Color text_color = {255, 255, 255, 255};
+    draw_text(x, y, scale, msg, text_color);
+}
+
 void render_guess_score(const BoardView *view) {
     if (!guess_mode) return;
 
@@ -391,6 +440,8 @@ void render_help_overlay(const BoardView *view) {
         "  C: OPEN CATALOG",
         "  E: TOGGLE ELO",
         "  U: TOGGLE UNCOLORED",
+        "  D: TOGGLE DEFENSE",
+        "  S: SAVE FEN",
         "  ESC: TOGGLE HELP",
         "  F: FLIP VIEW",
         "  UP/DOWN: SPEED",
@@ -899,6 +950,90 @@ void init_board() {
     for (int i = 0; i < BOARD_SIZE; i++) {
         strcpy(board[i], initial[i]);
     }
+    reset_castling_state();
+}
+
+void reset_castling_state(void) {
+    white_king_moved = 0;
+    white_rook_a_moved = 0;
+    white_rook_h_moved = 0;
+    black_king_moved = 0;
+    black_rook_a_moved = 0;
+    black_rook_h_moved = 0;
+}
+
+void build_fen(char *out, size_t out_size) {
+    if (!out || out_size == 0) return;
+    size_t pos = 0;
+    for (int r = 0; r < BOARD_SIZE; r++) {
+        int empty = 0;
+        for (int f = 0; f < BOARD_SIZE; f++) {
+            char p = board[r][f];
+            if (p == '.') {
+                empty++;
+            } else {
+                if (empty > 0) {
+                    if (pos + 1 < out_size) out[pos++] = (char)('0' + empty);
+                    empty = 0;
+                }
+                if (pos + 1 < out_size) out[pos++] = p;
+            }
+        }
+        if (empty > 0) {
+            if (pos + 1 < out_size) out[pos++] = (char)('0' + empty);
+        }
+        if (r < BOARD_SIZE - 1) {
+            if (pos + 1 < out_size) out[pos++] = '/';
+        }
+    }
+
+    if (pos + 1 < out_size) out[pos++] = ' ';
+    if (pos + 1 < out_size) out[pos++] = turn_is_white ? 'w' : 'b';
+    if (pos + 1 < out_size) out[pos++] = ' ';
+
+    char castle[5];
+    int cpos = 0;
+    if (!white_king_moved && !white_rook_h_moved && board[7][4] == 'K' && board[7][7] == 'R') {
+        castle[cpos++] = 'K';
+    }
+    if (!white_king_moved && !white_rook_a_moved && board[7][4] == 'K' && board[7][0] == 'R') {
+        castle[cpos++] = 'Q';
+    }
+    if (!black_king_moved && !black_rook_h_moved && board[0][4] == 'k' && board[0][7] == 'r') {
+        castle[cpos++] = 'k';
+    }
+    if (!black_king_moved && !black_rook_a_moved && board[0][4] == 'k' && board[0][0] == 'r') {
+        castle[cpos++] = 'q';
+    }
+    if (cpos == 0) {
+        if (pos + 1 < out_size) out[pos++] = '-';
+    } else {
+        for (int i = 0; i < cpos; i++) {
+            if (pos + 1 < out_size) out[pos++] = castle[i];
+        }
+    }
+
+    const char *suffix = " - 0 1";
+    for (const char *p = suffix; *p; p++) {
+        if (pos + 1 < out_size) out[pos++] = *p;
+    }
+    if (pos < out_size) out[pos] = '\0';
+    else out[out_size - 1] = '\0';
+}
+
+void save_fen_snapshot(const char *path) {
+    char fen[128];
+    build_fen(fen, sizeof(fen));
+    FILE *f = fopen(path, "a");
+    if (!f) {
+        printf("Failed to open %s for FEN output\n", path);
+        return;
+    }
+    fprintf(f, "%s\n", fen);
+    fclose(f);
+    printf("Saved FEN: %s\n", fen);
+    snprintf(fen_message, sizeof(fen_message), "Saved to %s", path);
+    fen_message_until = SDL_GetTicks() + FEN_MESSAGE_MS;
 }
 
 SDL_Texture *get_piece_texture(char piece) {
@@ -1187,12 +1322,18 @@ void render_board(const BoardView *view, const Overlay *overlay) {
                 SDL_RenderFillRect(renderer, &dot_rect);
             }
 
-    if (analysis_marks[row][col]) {
-        SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
-        SDL_SetRenderDrawColor(renderer, 40, 120, 255, 110);
-        SDL_RenderFillRect(renderer, &rect);
+            if (analysis_marks[row][col]) {
+                SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+                SDL_SetRenderDrawColor(renderer, 40, 120, 255, 110);
+                SDL_RenderFillRect(renderer, &rect);
+            }
+        }
     }
 
+    render_defense_lines(view);
+
+    for (int row = 0; row < BOARD_SIZE; row++) {  // row 0 = rank 8
+        for (int col = 0; col < BOARD_SIZE; col++) {
             int skip = 0;
             if (overlay && overlay->active) {
                 if (row == overlay->skip_r1 && col == overlay->skip_f1) {
@@ -1213,6 +1354,10 @@ void render_board(const BoardView *view, const Overlay *overlay) {
             char piece = skip ? '.' : board[row][col];
             SDL_Texture *tex = get_piece_texture(piece);
             if (tex) {
+                int x = 0;
+                int y = 0;
+                board_to_screen(view, row, col, &x, &y);
+                SDL_Rect rect = {x, y, view->square, view->square};
                 SDL_RenderCopy(renderer, tex, NULL, &rect);
             }
         }
@@ -1268,6 +1413,7 @@ void render_board(const BoardView *view, const Overlay *overlay) {
 
     render_year_label(view);
     render_speed_label(view);
+    render_fen_label(view);
     render_player_labels(view);
     render_guess_score(view);
     render_help_overlay(view);
@@ -1345,6 +1491,102 @@ int is_valid_move(char piece, int from_r, int from_f, int to_r, int to_f, int is
         else return is_empty;
     }
     return 0;
+}
+
+int piece_attacks_square(char piece, int from_r, int from_f, int to_r, int to_f, int is_white) {
+    if (from_r == to_r && from_f == to_f) return 0;
+    int dr = to_r - from_r;
+    int df = to_f - from_f;
+    int adr = abs(dr);
+    int adf = abs(df);
+    char p = toupper(piece);
+    int dir = is_white ? -1 : 1;
+
+    switch (p) {
+        case 'P':
+            return (adr == 1 && adf == 1 && dr == dir);
+        case 'N':
+            return (adr == 1 && adf == 2) || (adr == 2 && adf == 1);
+        case 'B':
+            return (adr == adf && adr > 0 && is_path_clear(from_r, from_f, to_r, to_f));
+        case 'R':
+            return ((adr == 0 || adf == 0) && (adr + adf > 0) &&
+                    is_path_clear(from_r, from_f, to_r, to_f));
+        case 'Q':
+            return (((adr == adf) || (adr == 0 || adf == 0)) && (adr + adf > 0) &&
+                    is_path_clear(from_r, from_f, to_r, to_f));
+        case 'K':
+            return (adr <= 1 && adf <= 1 && (adr + adf > 0));
+    }
+    return 0;
+}
+
+void draw_thick_line(int x1, int y1, int x2, int y2, int thickness, SDL_Color color) {
+    if (thickness < 1) thickness = 1;
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
+    float dx = (float)(x2 - x1);
+    float dy = (float)(y2 - y1);
+    float len = sqrtf(dx * dx + dy * dy);
+    if (len < 1.0f) {
+        SDL_RenderDrawPoint(renderer, x1, y1);
+        return;
+    }
+    float nx = -dy / len;
+    float ny = dx / len;
+    float half = (float)thickness * 0.5f;
+    float ox = nx * half;
+    float oy = ny * half;
+    SDL_Vertex verts[4];
+    verts[0].position.x = (float)x1 + ox;
+    verts[0].position.y = (float)y1 + oy;
+    verts[1].position.x = (float)x1 - ox;
+    verts[1].position.y = (float)y1 - oy;
+    verts[2].position.x = (float)x2 - ox;
+    verts[2].position.y = (float)y2 - oy;
+    verts[3].position.x = (float)x2 + ox;
+    verts[3].position.y = (float)y2 + oy;
+    for (int i = 0; i < 4; i++) {
+        verts[i].color = color;
+        verts[i].tex_coord.x = 0.0f;
+        verts[i].tex_coord.y = 0.0f;
+    }
+    int indices[6] = {0, 1, 2, 2, 3, 0};
+    SDL_RenderGeometry(renderer, NULL, verts, 4, indices, 6);
+}
+
+void render_defense_lines(const BoardView *view) {
+    if (!show_defense_lines) return;
+    SDL_Color white_line = {230, 230, 230, 70};
+    SDL_Color black_line = {20, 20, 20, 70};
+    int thickness = (view->square >= 70) ? 12 : (view->square >= 50 ? 10 : 8);
+
+    for (int r1 = 0; r1 < BOARD_SIZE; r1++) {
+        for (int f1 = 0; f1 < BOARD_SIZE; f1++) {
+            char p = board[r1][f1];
+            if (p == '.') continue;
+            int is_white = is_white_piece(p);
+            for (int r2 = 0; r2 < BOARD_SIZE; r2++) {
+                for (int f2 = 0; f2 < BOARD_SIZE; f2++) {
+                    if (r1 == r2 && f1 == f2) continue;
+                    char target = board[r2][f2];
+                    if (target == '.') continue;
+                    if (is_white_piece(target) != is_white) continue;
+                    if (!piece_attacks_square(p, r1, f1, r2, f2, is_white)) continue;
+
+                    int x1 = 0, y1 = 0, x2 = 0, y2 = 0;
+                    board_to_screen(view, r1, f1, &x1, &y1);
+                    board_to_screen(view, r2, f2, &x2, &y2);
+                    x1 += view->square / 2;
+                    y1 += view->square / 2;
+                    x2 += view->square / 2;
+                    y2 += view->square / 2;
+                    draw_thick_line(x1, y1, x2, y2, thickness,
+                                    is_white ? white_line : black_line);
+                }
+            }
+        }
+    }
 }
 
 int is_in_check(int is_white) {
@@ -1489,14 +1731,32 @@ int parse_san(const char *san, int is_white, Move *m) {
         Move temp_m = *m;
         temp_m.from_r = candidates[i].r;
         temp_m.from_f = candidates[i].f;
+        int save_wk = white_king_moved;
+        int save_wa = white_rook_a_moved;
+        int save_wh = white_rook_h_moved;
+        int save_bk = black_king_moved;
+        int save_ba = black_rook_a_moved;
+        int save_bh = black_rook_h_moved;
         apply_move(&temp_m, is_white);  // Apply on temp
         if (!is_in_check(is_white)) {
             memcpy(board, temp_board, sizeof(board));  // Restore original board
+            white_king_moved = save_wk;
+            white_rook_a_moved = save_wa;
+            white_rook_h_moved = save_wh;
+            black_king_moved = save_bk;
+            black_rook_a_moved = save_ba;
+            black_rook_h_moved = save_bh;
             m->from_r = candidates[i].r;
             m->from_f = candidates[i].f;
             return 1;
         }
         memcpy(board, temp_board, sizeof(board));  // Restore original board
+        white_king_moved = save_wk;
+        white_rook_a_moved = save_wa;
+        white_rook_h_moved = save_wh;
+        black_king_moved = save_bk;
+        black_rook_a_moved = save_ba;
+        black_rook_h_moved = save_bh;
     }
 
     return 0;  // No legal move found
@@ -1505,6 +1765,30 @@ int parse_san(const char *san, int is_white, Move *m) {
 void apply_move(const Move *m, int is_white) {
     char piece = board[m->from_r][m->from_f];
     char captured = board[m->to_r][m->to_f];
+
+    if (toupper(piece) == 'K') {
+        if (is_white) {
+            white_king_moved = 1;
+        } else {
+            black_king_moved = 1;
+        }
+    } else if (toupper(piece) == 'R') {
+        if (is_white) {
+            if (m->from_r == 7 && m->from_f == 0) white_rook_a_moved = 1;
+            if (m->from_r == 7 && m->from_f == 7) white_rook_h_moved = 1;
+        } else {
+            if (m->from_r == 0 && m->from_f == 0) black_rook_a_moved = 1;
+            if (m->from_r == 0 && m->from_f == 7) black_rook_h_moved = 1;
+        }
+    }
+
+    if (captured == 'R') {
+        if (m->to_r == 7 && m->to_f == 0) white_rook_a_moved = 1;
+        if (m->to_r == 7 && m->to_f == 7) white_rook_h_moved = 1;
+    } else if (captured == 'r') {
+        if (m->to_r == 0 && m->to_f == 0) black_rook_a_moved = 1;
+        if (m->to_r == 0 && m->to_f == 7) black_rook_h_moved = 1;
+    }
 
     // En passant capture
     int dir = is_white ? -1 : 1;
@@ -1523,6 +1807,13 @@ void apply_move(const Move *m, int is_white) {
         char rook = is_white ? 'R' : 'r';
         board[m->from_r][rook_to] = rook;
         board[m->from_r][rook_from] = '.';
+        if (is_white) {
+            if (rook_from == 0) white_rook_a_moved = 1;
+            if (rook_from == 7) white_rook_h_moved = 1;
+        } else {
+            if (rook_from == 0) black_rook_a_moved = 1;
+            if (rook_from == 7) black_rook_h_moved = 1;
+        }
     }
 }
 
@@ -1607,6 +1898,12 @@ int animate_move(const Move *m, int is_white) {
                     draw_board();
                 } else if (key == SDLK_u) {
                     uncolored_mode = !uncolored_mode;
+                    draw_board();
+                } else if (key == SDLK_d) {
+                    show_defense_lines = !show_defense_lines;
+                    draw_board();
+                } else if (key == SDLK_s) {
+                    save_fen_snapshot(FEN_SAVE_PATH);
                     draw_board();
                 } else if (key == SDLK_ESCAPE) {
                     show_help = !show_help;
@@ -2269,6 +2566,12 @@ int play_game(const char *move_buffer, const char *header_result) {
                 } else if (key == SDLK_u) {
                     uncolored_mode = !uncolored_mode;
                     draw_board();
+                } else if (key == SDLK_d) {
+                    show_defense_lines = !show_defense_lines;
+                    draw_board();
+                } else if (key == SDLK_s) {
+                    save_fen_snapshot(FEN_SAVE_PATH);
+                    draw_board();
                 } else if (key == SDLK_ESCAPE) {
                     show_help = !show_help;
                     draw_board();
@@ -2439,6 +2742,10 @@ int play_game(const char *move_buffer, const char *header_result) {
             speed_message_until = 0;
             draw_board();
         }
+        if (!analysis_mode && fen_message_until != 0 && speed_now >= fen_message_until) {
+            fen_message_until = 0;
+            draw_board();
+        }
 
         if (catalog_active) {
             BoardView view;
@@ -2601,6 +2908,12 @@ int play_game(const char *move_buffer, const char *header_result) {
                         } else if (key == SDLK_u) {
                             uncolored_mode = !uncolored_mode;
                             draw_board();
+                        } else if (key == SDLK_d) {
+                            show_defense_lines = !show_defense_lines;
+                            draw_board();
+                        } else if (key == SDLK_s) {
+                            save_fen_snapshot(FEN_SAVE_PATH);
+                            draw_board();
                         } else if (key == SDLK_ESCAPE) {
                             show_help = !show_help;
                         } else if (key == SDLK_UP || key == SDLK_DOWN) {
@@ -2668,6 +2981,12 @@ int play_game(const char *move_buffer, const char *header_result) {
                         } else if (key == SDLK_u) {
                             uncolored_mode = !uncolored_mode;
                             draw_board();
+                        } else if (key == SDLK_d) {
+                            show_defense_lines = !show_defense_lines;
+                            draw_board();
+                        } else if (key == SDLK_s) {
+                            save_fen_snapshot(FEN_SAVE_PATH);
+                            draw_board();
                         } else if (key == SDLK_ESCAPE) {
                             show_help = !show_help;
                         } else if (key == SDLK_UP || key == SDLK_DOWN) {
@@ -2709,6 +3028,10 @@ int play_game(const char *move_buffer, const char *header_result) {
             speed_message_until = 0;
             draw_board();
         }
+        if (!analysis_mode && fen_message_until != 0 && now >= fen_message_until) {
+            fen_message_until = 0;
+            draw_board();
+        }
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
             note_mouse_activity_event(&e);
@@ -2744,6 +3067,12 @@ int play_game(const char *move_buffer, const char *header_result) {
                     draw_board();
                 } else if (key == SDLK_u) {
                     uncolored_mode = !uncolored_mode;
+                    draw_board();
+                } else if (key == SDLK_d) {
+                    show_defense_lines = !show_defense_lines;
+                    draw_board();
+                } else if (key == SDLK_s) {
+                    save_fen_snapshot(FEN_SAVE_PATH);
                     draw_board();
                 } else if (key == SDLK_ESCAPE) {
                     show_help = !show_help;
