@@ -27,7 +27,7 @@
 #define MOVE_DELAY_MIN_MS 500
 #define MOVE_DELAY_MAX_MS 20000
 #define MOVE_DELAY_STEP_MS 500
-#define MOVE_ANIM_MS 300
+#define MOVE_ANIM_MS 450
 #define NAME_LEN 128
 #define YEAR_LEN 5
 #define RESULT_LEN 16
@@ -90,6 +90,7 @@ int catalog_index = 0;
 int catalog_scroll = 0;
 char *forced_pgn_path = NULL;
 char catalog_dir[1024] = "";
+int suppress_present = 0;
 int analysis_saved_dim = 0;
 int analysis_saved_show_loser_king = 0;
 int analysis_saved_show_draw_kings = 0;
@@ -1272,7 +1273,9 @@ void render_board(const BoardView *view, const Overlay *overlay) {
     render_help_overlay(view);
     render_catalog_overlay(view);
 
-    SDL_RenderPresent(renderer);
+    if (!suppress_present) {
+        SDL_RenderPresent(renderer);
+    }
 }
 
 void draw_board() {
@@ -1526,6 +1529,11 @@ void apply_move(const Move *m, int is_white) {
 int animate_move(const Move *m, int is_white) {
     char piece = board[m->from_r][m->from_f];
     if (piece == '.') return 0;
+    int castling = 0;
+    int rook_r = -1;
+    int rook_from_f = -1;
+    int rook_to_f = -1;
+    char rook_piece = '.';
 
     BoardView view;
     get_board_view(&view);
@@ -1536,7 +1544,24 @@ int animate_move(const Move *m, int is_white) {
     int end_y = 0;
     board_to_screen(&view, m->from_r, m->from_f, &start_x, &start_y);
     board_to_screen(&view, m->to_r, m->to_f, &end_x, &end_y);
+    int rook_start_x = 0;
+    int rook_start_y = 0;
+    int rook_end_x = 0;
+    int rook_end_y = 0;
+    if (toupper(piece) == 'K' && abs(m->from_f - m->to_f) == 2) {
+        rook_r = m->from_r;
+        rook_from_f = (m->to_f > m->from_f) ? 7 : 0;
+        rook_to_f = (m->to_f > m->from_f) ? 5 : 3;
+        rook_piece = board[rook_r][rook_from_f];
+        if (rook_piece != '.') {
+            castling = 1;
+            board[rook_r][rook_from_f] = '.';
+            board_to_screen(&view, rook_r, rook_from_f, &rook_start_x, &rook_start_y);
+            board_to_screen(&view, rook_r, rook_to_f, &rook_end_x, &rook_end_y);
+        }
+    }
     Uint32 start = SDL_GetTicks();
+    int quit = 0;
 
     for (;;) {
         Uint32 loop_now = SDL_GetTicks();
@@ -1548,26 +1573,32 @@ int animate_move(const Move *m, int is_white) {
                 draw_board();
                 if (game_nav_request == GAME_NAV_SELECT && catalog_selection_made) {
                     catalog_selection_made = 0;
-                    return 1;
+                    quit = 1;
+                    break;
                 }
                 continue;
             }
             if (e.type == SDL_QUIT) {
-                return 1;
+                quit = 1;
+                break;
             } else if (e.type == SDL_KEYDOWN) {
                 SDL_Keycode key = e.key.keysym.sym;
                 if (key == SDLK_q) {
                     game_nav_request = GAME_NAV_NONE;
-                    return 1;
+                    quit = 1;
+                    break;
                 } else if (key == SDLK_n) {
                     game_nav_request = GAME_NAV_NEXT;
-                    return 1;
+                    quit = 1;
+                    break;
                 } else if (key == SDLK_p) {
                     game_nav_request = GAME_NAV_PREV;
-                    return 1;
+                    quit = 1;
+                    break;
                 } else if (key == SDLK_r) {
                     game_nav_request = GAME_NAV_RESTART;
-                    return 1;
+                    quit = 1;
+                    break;
                 } else if (key == SDLK_c) {
                     catalog_open(games_dir_root);
                     draw_board();
@@ -1590,6 +1621,10 @@ int animate_move(const Move *m, int is_white) {
                     get_board_view(&view);
                     board_to_screen(&view, m->from_r, m->from_f, &start_x, &start_y);
                     board_to_screen(&view, m->to_r, m->to_f, &end_x, &end_y);
+                    if (castling) {
+                        board_to_screen(&view, rook_r, rook_from_f, &rook_start_x, &rook_start_y);
+                        board_to_screen(&view, rook_r, rook_to_f, &rook_end_x, &rook_end_y);
+                    }
                 }
             } else if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_MIDDLE) {
                 clear_analysis_marks();
@@ -1603,23 +1638,49 @@ int animate_move(const Move *m, int is_white) {
                 end_mark_drag();
             }
         }
+        if (quit) break;
 
         Uint32 now = SDL_GetTicks();
         float t = (MOVE_ANIM_MS > 0) ? (float)(now - start) / (float)MOVE_ANIM_MS : 1.0f;
         if (t > 1.0f) t = 1.0f;
+        float te = t * t * (3.0f - 2.0f * t);
 
         Overlay overlay;
         overlay.active = 1;
         overlay.piece = piece;
-        overlay.x = start_x + (end_x - start_x) * t;
-        overlay.y = start_y + (end_y - start_y) * t;
+        overlay.x = start_x + (end_x - start_x) * te;
+        overlay.y = start_y + (end_y - start_y) * te;
         overlay.skip_r1 = m->from_r;
         overlay.skip_f1 = m->from_f;
-        render_board(&view, &overlay);
+        if (castling) {
+            Overlay rook_overlay = {0};
+            rook_overlay.active = 1;
+            rook_overlay.piece = rook_piece;
+            rook_overlay.x = rook_start_x + (rook_end_x - rook_start_x) * te;
+            rook_overlay.y = rook_start_y + (rook_end_y - rook_start_y) * te;
+            rook_overlay.skip_r1 = rook_r;
+            rook_overlay.skip_f1 = rook_from_f;
+            suppress_present = 1;
+            render_board(&view, &overlay);
+            suppress_present = 0;
+            SDL_Texture *rook_tex = get_piece_texture(rook_piece);
+            if (rook_tex) {
+                SDL_Rect rect = {(int)(rook_overlay.x + 0.5f), (int)(rook_overlay.y + 0.5f),
+                                 view.square, view.square};
+                SDL_RenderCopy(renderer, rook_tex, NULL, &rect);
+            }
+            SDL_RenderPresent(renderer);
+        } else {
+            render_board(&view, &overlay);
+        }
 
         if (t >= 1.0f) break;
         SDL_Delay(10);
     }
+    if (castling) {
+        board[rook_r][rook_from_f] = rook_piece;
+    }
+    if (quit) return 1;
     return 0;
 }
 
