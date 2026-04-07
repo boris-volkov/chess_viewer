@@ -21,7 +21,7 @@
 
 #define BOARD_SIZE 8
 #define SCREEN_SIZE 800
-#define DEFAULT_GAMES_DIR "games"
+#define DEFAULT_GAMES_DIR "games/players"
 #define MAX_MOVES 8192
 #define MOVE_TEXT_LEN 32
 #define MOVE_DELAY_MS 5000
@@ -87,6 +87,8 @@ int game_nav_request = GAME_NAV_NONE;
 int show_elos = 0;
 int uncolored_mode = 0;
 int show_defense_lines = 0;
+Uint32 defense_pulse_start = 0;
+Uint32 last_defense_redraw = 0;
 int white_king_moved = 0;
 int white_rook_a_moved = 0;
 int white_rook_h_moved = 0;
@@ -167,6 +169,7 @@ void update_cursor_auto_hide(Uint32 now);
 void note_mouse_activity_event(const SDL_Event *e);
 int piece_attacks_square(char piece, int from_r, int from_f, int to_r, int to_f, int is_white);
 void draw_thick_line(int x1, int y1, int x2, int y2, int thickness, SDL_Color color);
+void draw_offset_thick_line(int x1, int y1, int x2, int y2, int thickness, SDL_Color color, float offset);
 void render_defense_lines(const BoardView *view);
 void reset_castling_state(void);
 void build_fen(char *out, size_t out_size);
@@ -1555,11 +1558,60 @@ void draw_thick_line(int x1, int y1, int x2, int y2, int thickness, SDL_Color co
     SDL_RenderGeometry(renderer, NULL, verts, 4, indices, 6);
 }
 
+void draw_offset_thick_line(int x1, int y1, int x2, int y2, int thickness, SDL_Color color, float offset) {
+    if (thickness < 1) thickness = 1;
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
+    float dx = (float)(x2 - x1);
+    float dy = (float)(y2 - y1);
+    float len = sqrtf(dx * dx + dy * dy);
+    if (len < 1.0f) {
+        SDL_RenderDrawPoint(renderer, x1, y1);
+        return;
+    }
+    float nx = -dy / len;
+    float ny = dx / len;
+    float half = (float)thickness * 0.5f;
+    float ox = nx * half;
+    float oy = ny * half;
+    // Apply offset in the direction of the normal
+    float offset_x = nx * offset;
+    float offset_y = ny * offset;
+    SDL_Vertex verts[4];
+    verts[0].position.x = (float)x1 + ox + offset_x;
+    verts[0].position.y = (float)y1 + oy + offset_y;
+    verts[1].position.x = (float)x1 - ox + offset_x;
+    verts[1].position.y = (float)y1 - oy + offset_y;
+    verts[2].position.x = (float)x2 - ox + offset_x;
+    verts[2].position.y = (float)y2 - oy + offset_y;
+    verts[3].position.x = (float)x2 + ox + offset_x;
+    verts[3].position.y = (float)y2 + oy + offset_y;
+    for (int i = 0; i < 4; i++) {
+        verts[i].color = color;
+        verts[i].tex_coord.x = 0.0f;
+        verts[i].tex_coord.y = 0.0f;
+    }
+    int indices[6] = {0, 1, 2, 2, 3, 0};
+    SDL_RenderGeometry(renderer, NULL, verts, 4, indices, 6);
+}
+
 void render_defense_lines(const BoardView *view) {
     if (!show_defense_lines) return;
-    SDL_Color white_line = {230, 230, 230, 70};
-    SDL_Color black_line = {20, 20, 20, 70};
-    int thickness = (view->square >= 70) ? 12 : (view->square >= 50 ? 10 : 8);
+
+    // Initialize pulse timing if not set
+    if (defense_pulse_start == 0) {
+        defense_pulse_start = SDL_GetTicks();
+    }
+
+    Uint32 now = SDL_GetTicks();
+    float pulse_cycle = 2000.0f; // 2 seconds per complete pulse cycle
+    float pulse_progress = fmodf((float)(now - defense_pulse_start), pulse_cycle) / pulse_cycle;
+
+    SDL_Color white_line = {180, 180, 180, 80};
+    SDL_Color black_line = {140, 140, 140, 255};
+    SDL_Color white_pulse = {255, 255, 255, 150};
+    SDL_Color black_pulse = {80, 80, 80, 150};
+    int thickness = ((view->square >= 70) ? 12 : (view->square >= 50 ? 10 : 8)) * 2;
 
     for (int r1 = 0; r1 < BOARD_SIZE; r1++) {
         for (int f1 = 0; f1 < BOARD_SIZE; f1++) {
@@ -1574,6 +1626,9 @@ void render_defense_lines(const BoardView *view) {
                     if (is_white_piece(target) != is_white) continue;
                     if (!piece_attacks_square(p, r1, f1, r2, f2, is_white)) continue;
 
+                    // Check if mutual defense (both pieces attack each other)
+                    int mutual = piece_attacks_square(target, r2, f2, r1, f1, is_white);
+
                     int x1 = 0, y1 = 0, x2 = 0, y2 = 0;
                     board_to_screen(view, r1, f1, &x1, &y1);
                     board_to_screen(view, r2, f2, &x2, &y2);
@@ -1581,8 +1636,125 @@ void render_defense_lines(const BoardView *view) {
                     y1 += view->square / 2;
                     x2 += view->square / 2;
                     y2 += view->square / 2;
-                    draw_thick_line(x1, y1, x2, y2, thickness,
-                                    is_white ? white_line : black_line);
+
+                    // Draw line with pulsing brightness
+                    float dx = x2 - x1;
+                    float dy = y2 - y1;
+                    float length = sqrtf(dx * dx + dy * dy);
+                    if (length < 1.0f) length = 1.0f;
+
+                    if (mutual) {
+                        // For mutual defense: double-thick line with split pulsing
+                        // Draw two offset lines: left half and right half
+
+                        // Draw multiple segments along the line with split brightness
+                        const int segments = 20;
+                        for (int i = 0; i < segments; i++) {
+                            float t1 = (float)i / segments;
+                            float t2 = (float)(i + 1) / segments;
+
+                            float x_seg1 = x1 + dx * t1;
+                            float y_seg1 = y1 + dy * t1;
+                            float x_seg2 = x1 + dx * t2;
+                            float y_seg2 = y1 + dy * t2;
+
+                            // Calculate brightness for this segment based on pulse position
+                            float segment_center = (t1 + t2) * 0.5f;
+
+                            // Left half: pulse in one direction
+                            float left_pulse_distance = fabsf(segment_center - pulse_progress);
+                            if (left_pulse_distance > 0.5f) left_pulse_distance = 1.0f - left_pulse_distance;
+
+                            // Right half: pulse in opposite direction
+                            float right_pulse_distance = fabsf(segment_center - fmodf(pulse_progress + 0.5f, 1.0f));
+                            if (right_pulse_distance > 0.5f) right_pulse_distance = 1.0f - right_pulse_distance;
+
+                            float left_brightness, right_brightness;
+                            if (is_white) {
+                                // White lines: brighten during pulse
+                                left_brightness = 1.0f + 2.0f * (1.0f - left_pulse_distance * 2.0f);
+                                right_brightness = 1.0f + 2.0f * (1.0f - right_pulse_distance * 2.0f);
+                                if (left_brightness < 1.0f) left_brightness = 1.0f;
+                                if (left_brightness > 2.0f) left_brightness = 2.0f;
+                                if (right_brightness < 1.0f) right_brightness = 1.0f;
+                                if (right_brightness > 2.0f) right_brightness = 2.0f;
+                            } else {
+                                // Black lines: darken from 140 to 20 during pulse
+                                float target_brightness = 20.0f / 140.0f;  // 20/140 = 0.1429
+                                left_brightness = 1.0f - (1.0f - target_brightness) * (1.0f - left_pulse_distance * 2.0f);
+                                right_brightness = 1.0f - (1.0f - target_brightness) * (1.0f - right_pulse_distance * 2.0f);
+                                if (left_brightness < target_brightness) left_brightness = target_brightness;
+                                if (left_brightness > 1.0f) left_brightness = 1.0f;
+                                if (right_brightness < target_brightness) right_brightness = target_brightness;
+                                if (right_brightness > 1.0f) right_brightness = 1.0f;
+                            }
+
+                            SDL_Color base_color = is_white ? white_line : black_line;
+
+                            // Draw left half (offset negative)
+                            Uint8 lr = (Uint8)(base_color.r * left_brightness);
+                            Uint8 lg = (Uint8)(base_color.g * left_brightness);
+                            Uint8 lb = (Uint8)(base_color.b * left_brightness);
+                            if (lr > 255) lr = 255;
+                            if (lg > 255) lg = 255;
+                            if (lb > 255) lb = 255;
+                            SDL_Color left_color = {lr, lg, lb, base_color.a};
+                            draw_offset_thick_line((int)x_seg1, (int)y_seg1, (int)x_seg2, (int)y_seg2, thickness, left_color, -(float)thickness * 0.5f);
+
+                            // Draw right half (offset positive)
+                            Uint8 rr = (Uint8)(base_color.r * right_brightness);
+                            Uint8 rg = (Uint8)(base_color.g * right_brightness);
+                            Uint8 rb = (Uint8)(base_color.b * right_brightness);
+                            if (rr > 255) rr = 255;
+                            if (rg > 255) rg = 255;
+                            if (rb > 255) rb = 255;
+                            SDL_Color right_color = {rr, rg, rb, base_color.a};
+                            draw_offset_thick_line((int)x_seg1, (int)y_seg1, (int)x_seg2, (int)y_seg2, thickness, right_color, (float)thickness * 0.5f);
+                        }
+                    } else {
+                        // For one-way defense: single pulsing line
+                        const int segments = 20;
+                        for (int i = 0; i < segments; i++) {
+                            float t1 = (float)i / segments;
+                            float t2 = (float)(i + 1) / segments;
+
+                            float x_seg1 = x1 + dx * t1;
+                            float y_seg1 = y1 + dy * t1;
+                            float x_seg2 = x1 + dx * t2;
+                            float y_seg2 = y1 + dy * t2;
+
+                            // Calculate brightness for this segment based on pulse position
+                            float segment_center = (t1 + t2) * 0.5f;
+                            float pulse_distance = fabsf(segment_center - pulse_progress);
+                            if (pulse_distance > 0.5f) pulse_distance = 1.0f - pulse_distance;
+
+                            float brightness;
+                            if (is_white) {
+                                // White lines: brighten during pulse
+                                brightness = 1.0f + 2.0f * (1.0f - pulse_distance * 2.0f);
+                                if (brightness < 1.0f) brightness = 1.0f;
+                                if (brightness > 2.0f) brightness = 2.0f;
+                            } else {
+                                // Black lines: darken from 140 to 20 during pulse
+                                float target_brightness = 20.0f / 140.0f;  // 20/140 = 0.1429
+                                brightness = 1.0f - (1.0f - target_brightness) * (1.0f - pulse_distance * 2.0f);
+                                if (brightness < target_brightness) brightness = target_brightness;
+                                if (brightness > 1.0f) brightness = 1.0f;
+                            }
+
+                            SDL_Color base_color = is_white ? white_line : black_line;
+                            Uint8 r = (Uint8)(base_color.r * brightness);
+                            Uint8 g = (Uint8)(base_color.g * brightness);
+                            Uint8 b = (Uint8)(base_color.b * brightness);
+                            Uint8 a = base_color.a;
+                            if (r > 255) r = 255;
+                            if (g > 255) g = 255;
+                            if (b > 255) b = 255;
+
+                            SDL_Color segment_color = {r, g, b, a};
+                            draw_thick_line((int)x_seg1, (int)y_seg1, (int)x_seg2, (int)y_seg2, thickness, segment_color);
+                        }
+                    }
                 }
             }
         }
@@ -2745,6 +2917,12 @@ int play_game(const char *move_buffer, const char *header_result) {
         if (!analysis_mode && fen_message_until != 0 && speed_now >= fen_message_until) {
             fen_message_until = 0;
             draw_board();
+        }
+
+        // Redraw board periodically for defense line pulsing animation
+        if (show_defense_lines && !analysis_mode && !guess_mode && speed_now - last_defense_redraw >= 50) {
+            draw_board();
+            last_defense_redraw = speed_now;
         }
 
         if (catalog_active) {
