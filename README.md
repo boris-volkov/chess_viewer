@@ -77,6 +77,38 @@ Run from the repo root (or keep `games/` and `pieces/` next to the executable):
 
 The program loads a random PGN from `games/` and PNG assets from `pieces/`.
 
+## Custom piece sets
+
+You can create custom chess piece sets by converting SVG files to PNG format.
+
+### Using Python script (recommended)
+```sh
+# Install Python dependencies and convert SVG files
+python scripts/svg_to_png.py [size]
+
+# Examples:
+python scripts/svg_to_png.py        # Default 64x64 (good for standard displays)
+python scripts/svg_to_png.py 128    # 128x128 (good for high-DPI displays)
+python scripts/svg_to_png.py 256    # 256x256 (excellent for 4K displays)
+```
+
+### Using Windows batch script
+```batch
+# Requires ImageMagick to be installed
+scripts\svg_to_png.bat [size]
+```
+
+### Instructions
+1. Place your SVG chess piece files in the `pieces/` directory
+2. Use the naming convention: `Chess_[piece][theme].svg`
+   - Pieces: `k` (king), `q` (queen), `r` (rook), `b` (bishop), `n` (knight), `p` (pawn)
+   - Themes: `lt` (light theme), `dt` (dark theme)
+   - Examples: `Chess_klt.svg`, `Chess_qdt.svg`, `Chess_pdt.svg`
+3. Run the conversion script
+4. The PNG files will be created alongside the original SVG files (which are preserved)
+
+The Python script will automatically install required dependencies. The batch script requires ImageMagick.
+
 ## Releases and packaging
 Windows binaries are published via GitHub Releases to keep the repo clean.
 The release zip contains:

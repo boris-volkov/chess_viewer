@@ -102,6 +102,7 @@ int catalog_entry_count = 0;
 int catalog_index = 0;
 int catalog_scroll = 0;
 char *forced_pgn_path = NULL;
+char catalog_base_dir[1024] = "";
 char catalog_dir[1024] = "";
 int suppress_present = 0;
 int analysis_saved_dim = 0;
@@ -683,6 +684,9 @@ void catalog_free(void) {
 void catalog_open(const char *games_dir) {
     if (catalog_active) return;
     catalog_free();
+    // Store the base directory for consistent navigation
+    strncpy(catalog_base_dir, games_dir, sizeof(catalog_base_dir) - 1);
+    catalog_base_dir[sizeof(catalog_base_dir) - 1] = '\0';
     catalog_set_dir("");
     if (!catalog_load_entries(games_dir)) {
         catalog_entries = NULL;
@@ -860,7 +864,7 @@ int handle_catalog_event(const SDL_Event *e, const char *games_dir) {
             if (catalog_index > total - 1) catalog_index = total - 1;
             return 1;
         } else if (key == SDLK_RETURN || key == SDLK_KP_ENTER) {
-            catalog_select(games_dir);
+            catalog_select(catalog_base_dir);
             game_nav_request = GAME_NAV_SELECT;
             return 1;
         }
@@ -1627,7 +1631,8 @@ void render_defense_lines(const BoardView *view) {
                     if (!piece_attacks_square(p, r1, f1, r2, f2, is_white)) continue;
 
                     // Check if mutual defense (both pieces attack each other)
-                    int mutual = piece_attacks_square(target, r2, f2, r1, f1, is_white);
+                    int mutual = piece_attacks_square(target, r2, f2, r1, f1, is_white) &&
+                                 piece_attacks_square(p, r1, f1, r2, f2, is_white);
 
                     int x1 = 0, y1 = 0, x2 = 0, y2 = 0;
                     board_to_screen(view, r1, f1, &x1, &y1);
@@ -2063,7 +2068,16 @@ int animate_move(const Move *m, int is_white) {
                     quit = 1;
                     break;
                 } else if (key == SDLK_c) {
-                    catalog_open(games_dir_root);
+                    // Open catalog from parent directory so both players/ and openings/ are visible
+                    char parent_dir[1024];
+                    strncpy(parent_dir, games_dir_root, sizeof(parent_dir) - 1);
+                    parent_dir[sizeof(parent_dir) - 1] = '\0';
+                    char *last_sep = strrchr(parent_dir, '/');
+                    if (!last_sep) last_sep = strrchr(parent_dir, '\\');
+                    if (last_sep) {
+                        *last_sep = '\0';
+                    }
+                    catalog_open(parent_dir[0] ? parent_dir : ".");
                     draw_board();
                 } else if (key == SDLK_e) {
                     show_elos = !show_elos;
@@ -2705,7 +2719,7 @@ int play_game(const char *move_buffer, const char *header_result) {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
             note_mouse_activity_event(&e);
-            if (handle_catalog_event(&e, games_dir_root)) {
+            if (handle_catalog_event(&e, catalog_active ? catalog_base_dir : games_dir_root)) {
                 draw_board();
         if (game_nav_request == GAME_NAV_SELECT && catalog_selection_made) {
             catalog_selection_made = 0;
@@ -2730,7 +2744,16 @@ int play_game(const char *move_buffer, const char *header_result) {
                     game_nav_request = GAME_NAV_RESTART;
                     quit = 1;
                 } else if (key == SDLK_c) {
-                    catalog_open(games_dir_root);
+                    // Open catalog from parent directory so both players/ and openings/ are visible
+                    char parent_dir[1024];
+                    strncpy(parent_dir, games_dir_root, sizeof(parent_dir) - 1);
+                    parent_dir[sizeof(parent_dir) - 1] = '\0';
+                    char *last_sep = strrchr(parent_dir, '/');
+                    if (!last_sep) last_sep = strrchr(parent_dir, '\\');
+                    if (last_sep) {
+                        *last_sep = '\0';
+                    }
+                    catalog_open(parent_dir[0] ? parent_dir : ".");
                     draw_board();
                 } else if (key == SDLK_e) {
                     show_elos = !show_elos;
@@ -3412,6 +3435,9 @@ int main(int argc, char *argv[]) {
         printf("SDL init error: %s\n", SDL_GetError());
         return 1;
     }
+
+    // Enable bilinear texture filtering for smoother piece rendering
+    SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
 
     window = SDL_CreateWindow("Chess Viewer", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
                               SCREEN_SIZE, SCREEN_SIZE, SDL_WINDOW_SHOWN | SDL_WINDOW_FULLSCREEN_DESKTOP);
