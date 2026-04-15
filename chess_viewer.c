@@ -701,46 +701,41 @@ void catalog_open(const char *games_dir) {
 
 void catalog_select(const char *games_dir) {
     if (!catalog_active) return;
-    if (catalog_index == 0) {
-        free(forced_pgn_path);
-        forced_pgn_path = NULL;
-    } else {
-        int entry_index = catalog_index - 1;
-        if (entry_index >= 0 && entry_index < catalog_entry_count) {
-            CatalogEntry *entry = &catalog_entries[entry_index];
-            if (entry->type == 2) {
-                catalog_dir_up();
-                catalog_load_entries(games_dir);
-                catalog_index = 0;
-                catalog_scroll = 0;
-                return;
-            }
-            if (entry->type == 1) {
-                char next_dir[1024];
-                if (catalog_dir[0] == '\0') {
-                    snprintf(next_dir, sizeof(next_dir), "%s", entry->name);
-                } else {
-                    snprintf(next_dir, sizeof(next_dir), "%s%c%s", catalog_dir, PATH_SEP, entry->name);
-                }
-                catalog_set_dir(next_dir);
-                catalog_load_entries(games_dir);
-                catalog_index = 0;
-                catalog_scroll = 0;
-                return;
-            }
-            char *dir_path = NULL;
+    int entry_index = catalog_index;
+    if (entry_index >= 0 && entry_index < catalog_entry_count) {
+        CatalogEntry *entry = &catalog_entries[entry_index];
+        if (entry->type == 2) {
+            catalog_dir_up();
+            catalog_load_entries(games_dir);
+            catalog_index = 0;
+            catalog_scroll = 0;
+            return;
+        }
+        if (entry->type == 1) {
+            char next_dir[1024];
             if (catalog_dir[0] == '\0') {
-                dir_path = copy_string(games_dir);
+                snprintf(next_dir, sizeof(next_dir), "%s", entry->name);
             } else {
-                dir_path = join_path(games_dir, catalog_dir);
+                snprintf(next_dir, sizeof(next_dir), "%s%c%s", catalog_dir, PATH_SEP, entry->name);
             }
-            if (dir_path) {
-                char *path = join_path(dir_path, entry->name);
-                free(dir_path);
-                if (path) {
-                    free(forced_pgn_path);
-                    forced_pgn_path = path;
-                }
+            catalog_set_dir(next_dir);
+            catalog_load_entries(games_dir);
+            catalog_index = 0;
+            catalog_scroll = 0;
+            return;
+        }
+        char *dir_path = NULL;
+        if (catalog_dir[0] == '\0') {
+            dir_path = copy_string(games_dir);
+        } else {
+            dir_path = join_path(games_dir, catalog_dir);
+        }
+        if (dir_path) {
+            char *path = join_path(dir_path, entry->name);
+            free(dir_path);
+            if (path) {
+                free(forced_pgn_path);
+                forced_pgn_path = path;
             }
         }
     }
@@ -749,7 +744,7 @@ void catalog_select(const char *games_dir) {
 }
 
 int catalog_total_entries(void) {
-    return 1 + catalog_entry_count;
+    return catalog_entry_count;
 }
 
 void render_catalog_overlay(const BoardView *view) {
@@ -814,18 +809,13 @@ void render_catalog_overlay(const BoardView *view) {
         int idx = catalog_scroll + i;
         if (idx >= total_entries) break;
         char label[1024];
-        if (idx == 0) {
-            strncpy(label, random_label, sizeof(label) - 1);
-            label[sizeof(label) - 1] = '\0';
+        const CatalogEntry *entry = &catalog_entries[idx];
+        if (entry->type == 1) {
+            snprintf(label, sizeof(label), "[DIR] %s", entry->name);
+        } else if (entry->type == 2) {
+            snprintf(label, sizeof(label), "[..]");
         } else {
-            const CatalogEntry *entry = &catalog_entries[idx - 1];
-            if (entry->type == 1) {
-                snprintf(label, sizeof(label), "[DIR] %s", entry->name);
-            } else if (entry->type == 2) {
-                snprintf(label, sizeof(label), "[..]");
-            } else {
-                snprintf(label, sizeof(label), "%s", entry->name);
-            }
+            snprintf(label, sizeof(label), "%s", entry->name);
         }
         if (idx == catalog_index) {
             SDL_Rect hi = {text_x - 3, text_y - 3, max_w + 6, text_h + 6};
