@@ -131,6 +131,8 @@ int board_state_count = 0;
 
 int black_prisoners = 0;
 int white_prisoners = 0;
+int analysis_saved_black_prisoners = 0;
+int analysis_saved_white_prisoners = 0;
 
 int adjust_move_delay(int delta_ms, Uint32 now);
 void board_to_screen(const BoardView *view, int board_r, int board_f, int *out_x, int *out_y);
@@ -262,6 +264,8 @@ int would_be_suicide(int r, int f, int color) {
     Stone saved_analysis_stones[MAX_MOVES];
     memcpy(saved_analysis_stones, analysis_stones, sizeof(analysis_stones));
     int saved_analysis_stone_count = analysis_stone_count;
+    int saved_black_prisoners = black_prisoners;
+    int saved_white_prisoners = white_prisoners;
 
     // Temporarily place the stone
     board[r][f] = (char)(color ? 1 : 2);
@@ -279,6 +283,8 @@ int would_be_suicide(int r, int f, int color) {
     stone_count = saved_stone_count;
     memcpy(analysis_stones, saved_analysis_stones, sizeof(analysis_stones));
     analysis_stone_count = saved_analysis_stone_count;
+    black_prisoners = saved_black_prisoners;
+    white_prisoners = saved_white_prisoners;
 
     return suicide;
 }
@@ -339,9 +345,9 @@ void remove_captured_stones(int skip_color, int skip_r, int skip_f, int placed_s
     // Update prisoner counts
     if (captured_count > 0) {
         if (placed_stone_color == 1) { // Black placed the stone, so white stones were captured
-            white_prisoners += captured_count;
-        } else { // White placed the stone, so black stones were captured
             black_prisoners += captured_count;
+        } else { // White placed the stone, so black stones were captured
+            white_prisoners += captured_count;
         }
     }
 
@@ -1577,11 +1583,17 @@ int play_game(char moves[][MOVE_TEXT_LEN], int move_count, const char *result) {
                     if (analysis_mode) {
                         analysis_mode = 0;
                         clear_analysis_stones();
+                        // Restore prisoner counts from before analysis mode
+                        black_prisoners = analysis_saved_black_prisoners;
+                        white_prisoners = analysis_saved_white_prisoners;
                         turn_is_black = 1;  // Reset to black when exiting analysis
                         set_cursor_visible(1);  // Update cursor when exiting analysis mode
                     } else {
                         analysis_mode = 1;
                         analysis_dragging = 0;
+                        // Save current prisoner counts before entering analysis mode
+                        analysis_saved_black_prisoners = black_prisoners;
+                        analysis_saved_white_prisoners = white_prisoners;
                         turn_is_black = 1;  // Always start with Black in analysis mode
                         set_cursor_visible(1);  // Update cursor when entering analysis mode
                     }
