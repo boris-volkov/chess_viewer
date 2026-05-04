@@ -57,6 +57,7 @@ char board[BOARD_SIZE][BOARD_SIZE];
 SDL_Window *window = NULL;
 SDL_Renderer *renderer = NULL;
 SDL_Texture *stone_textures[2] = {NULL}; // 0 = black, 1 = white (unused now)
+SDL_Cursor *analysis_cursor = NULL;
 char current_black_name[NAME_LEN] = "Black";
 char current_white_name[NAME_LEN] = "White";
 const char *games_dir_root = DEFAULT_GAMES_DIR;
@@ -225,6 +226,7 @@ char *join_path(const char *dir, const char *name);
 int list_sgf_files(const char *dir, char ***out_files);
 static int list_sgf_files_recursive(const char *dir, const char *base,
                                     char ***out_files, int *count, int *cap);
+SDL_Cursor *create_analysis_cursor(void);
 void set_cursor_visible(int visible);
 void note_mouse_activity(Uint32 now);
 void update_cursor_auto_hide(Uint32 now);
@@ -1538,10 +1540,12 @@ int play_game(char moves[][MOVE_TEXT_LEN], int move_count, const char *result) {
                         analysis_mode = 0;
                         clear_analysis_stones();
                         turn_is_black = 1;  // Reset to black when exiting analysis
+                        set_cursor_visible(1);  // Update cursor when exiting analysis mode
                     } else {
                         analysis_mode = 1;
                         analysis_dragging = 0;
                         turn_is_black = 1;  // Always start with Black in analysis mode
+                        set_cursor_visible(1);  // Update cursor when entering analysis mode
                     }
                     draw_board();
                 } else if (key == SDLK_g) {
@@ -1947,7 +1951,52 @@ void free_string_list(char **items, int count) {
     free(items);
 }
 
+SDL_Cursor *create_analysis_cursor(void) {
+    const int size = 64;
+    const int center = size / 2;
+    const int thickness = 7;
+    SDL_Surface *surface = SDL_CreateRGBSurfaceWithFormat(0, size, size, 32, SDL_PIXELFORMAT_RGBA32);
+    if (!surface) return NULL;
+
+    Uint32 transparent = SDL_MapRGBA(surface->format, 0, 0, 0, 0);
+    Uint32 white = SDL_MapRGBA(surface->format, 255, 255, 255, 255);
+
+    if (SDL_LockSurface(surface) != 0) {
+        SDL_FreeSurface(surface);
+        return NULL;
+    }
+
+    Uint32 *pixels = (Uint32 *)surface->pixels;
+    int pitch = surface->pitch / 4;
+    for (int y = 0; y < size; y++) {
+        for (int x = 0; x < size; x++) {
+            pixels[y * pitch + x] = transparent;
+        }
+    }
+
+    int half = thickness / 2;
+    // Draw horizontal white line
+    for (int dx = -half; dx <= half; dx++) {
+        int x = center + dx;
+        if (x >= 0 && x < size) pixels[center * pitch + x] = white;
+    }
+    // Draw vertical white line
+    for (int dy = -half; dy <= half; dy++) {
+        int y = center + dy;
+        if (y >= 0 && y < size) pixels[y * pitch + center] = white;
+    }
+
+    SDL_UnlockSurface(surface);
+    SDL_Cursor *cursor = SDL_CreateColorCursor(surface, center, center);
+    SDL_FreeSurface(surface);
+    return cursor;
+}
+
 void set_cursor_visible(int visible) {
+    // Always use the custom analysis cursor
+    if (analysis_cursor) {
+        SDL_SetCursor(analysis_cursor);
+    }
     SDL_ShowCursor(visible ? SDL_ENABLE : SDL_DISABLE);
     cursor_visible = visible;
 }
@@ -1958,12 +2007,9 @@ void note_mouse_activity(Uint32 now) {
 }
 
 void update_cursor_auto_hide(Uint32 now) {
-    if (analysis_mode || guess_mode) {
-        if (!cursor_visible) set_cursor_visible(1);
-        return;
-    }
-    if (cursor_visible && now - last_mouse_activity >= CURSOR_IDLE_MS) {
-        set_cursor_visible(0);
+    // Cursor is always visible now - no auto-hide
+    if (!cursor_visible) {
+        set_cursor_visible(1);
     }
 }
 
@@ -2001,6 +2047,10 @@ int main(int argc, char *argv[]) {
 
     // Stone textures are now rendered as circles, no PNG files needed
 
+    analysis_cursor = create_analysis_cursor();
+    if (!analysis_cursor) {
+        analysis_cursor = SDL_GetDefaultCursor();
+    }
     set_cursor_visible(1);
     note_mouse_activity(SDL_GetTicks());
 
@@ -2049,6 +2099,9 @@ int main(int argc, char *argv[]) {
     }
 
     // Cleanup
+    if (analysis_cursor) {
+        SDL_FreeCursor(analysis_cursor);
+    }
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
     SDL_Quit();
