@@ -110,10 +110,19 @@ typedef struct {
     int is_black;
 } Stone;
 
+typedef struct {
+    char board[BOARD_SIZE][BOARD_SIZE];
+    Stone stones[MAX_MOVES];
+    int stone_count;
+} BoardState;
+
 Stone stones[MAX_MOVES];
 int stone_count = 0;
 Stone analysis_stones[MAX_MOVES];
 int analysis_stone_count = 0;
+
+BoardState board_states[MAX_MOVES];
+int board_state_count = 0;
 
 int adjust_move_delay(int delta_ms, Uint32 now);
 void board_to_screen(const BoardView *view, int board_r, int board_f, int *out_x, int *out_y);
@@ -990,6 +999,7 @@ void reset_board(void) {
     memset(board, 0, sizeof(board));
     stone_count = 0;
     analysis_stone_count = 0;
+    board_state_count = 0;
 }
 
 void add_stone(int r, int f, int is_black) {
@@ -1033,6 +1043,22 @@ void clear_analysis_stones(void) {
         board[r][f] = 0;
     }
     analysis_stone_count = 0;
+}
+
+void save_board_state(void) {
+    if (board_state_count >= MAX_MOVES) return;
+    memcpy(board_states[board_state_count].board, board, sizeof(board));
+    memcpy(board_states[board_state_count].stones, stones, sizeof(stones));
+    board_states[board_state_count].stone_count = stone_count;
+    board_state_count++;
+}
+
+void restore_board_state(int state_index) {
+    if (state_index < 0 || state_index >= board_state_count) return;
+    memcpy(board, board_states[state_index].board, sizeof(board));
+    memcpy(stones, board_states[state_index].stones, sizeof(stones));
+    stone_count = board_states[state_index].stone_count;
+    board_state_count = state_index + 1;  // Truncate states after this point
 }
 
 void draw_stone_circle(const BoardView *view, int r, int f, int is_black, Uint8 alpha) {
@@ -1249,6 +1275,8 @@ int animate_move(int r, int f, int is_black) {
     add_stone(r, f, is_black);
     // Remove captured stones (skip the placed stone)
     remove_captured_stones(-1, r, f);
+    // Save the board state after the move
+    save_board_state();
     draw_board();
     return 0;
 }
@@ -1452,7 +1480,7 @@ int play_game(char moves[][MOVE_TEXT_LEN], int move_count, const char *result) {
                 } else if (!analysis_mode && !guess_mode && paused && key == SDLK_LEFT) {
                     if (index > 0) {
                         index--;
-                        remove_last_stone();
+                        restore_board_state(index);
                         draw_board();
                     }
                 } else if (!analysis_mode && !guess_mode && paused && key == SDLK_RIGHT) {
