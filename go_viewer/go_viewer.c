@@ -69,6 +69,8 @@ int guess_score = 0;
 int turn_is_black = 1;
 int analysis_turn_is_black = 1;
 int game_nav_request = GAME_NAV_NONE;
+int game_finished = 0;
+int paused = 0;
 int catalog_active = 0;
 int catalog_selection_made = 0;
 CatalogEntry *catalog_entries = NULL;
@@ -138,6 +140,78 @@ int play_game(char moves[][MOVE_TEXT_LEN], int move_count, const char *result);
 void render_speed_label(const BoardView *view);
 void render_help_overlay(const BoardView *view);
 void render_guess_score(const BoardView *view);
+void render_result_message(const BoardView *view);
+
+// Forward declarations for text functions
+int text_width_px(const char *text, int scale);
+void draw_text(int x, int y, int scale, const char *text, SDL_Color color);
+
+// Convert SGF result format to human-readable text
+const char* format_result_message(const char *sgf_result) {
+    if (!sgf_result || sgf_result[0] == '\0') return "";
+
+    static char formatted[64];
+
+    if (strcmp(sgf_result, "B+R") == 0) {
+        strcpy(formatted, "Black Resigns");
+    } else if (strcmp(sgf_result, "W+R") == 0) {
+        strcpy(formatted, "White Resigns");
+    } else if (strcmp(sgf_result, "B+Resign") == 0) {
+        strcpy(formatted, "Black Resigns");
+    } else if (strcmp(sgf_result, "W+Resign") == 0) {
+        strcpy(formatted, "White Resigns");
+    } else if (strcmp(sgf_result, "B+T") == 0) {
+        strcpy(formatted, "Black Wins by Time");
+    } else if (strcmp(sgf_result, "W+T") == 0) {
+        strcpy(formatted, "White Wins by Time");
+    } else if (strcmp(sgf_result, "1/2-1/2") == 0) {
+        strcpy(formatted, "Draw");
+    } else if (strcmp(sgf_result, "Jigo") == 0) {
+        strcpy(formatted, "Draw");
+    } else if (sgf_result[0] == 'B' && sgf_result[1] == '+') {
+        // Black wins by points, e.g., "B+5", "B+12.5"
+        snprintf(formatted, sizeof(formatted), "Black Wins by %s", sgf_result + 2);
+    } else if (sgf_result[0] == 'W' && sgf_result[1] == '+') {
+        // White wins by points, e.g., "W+5", "W+12.5"
+        snprintf(formatted, sizeof(formatted), "White Wins by %s", sgf_result + 2);
+    } else if (strcmp(sgf_result, "Void") == 0) {
+        strcpy(formatted, "Game Void");
+    } else if (strcmp(sgf_result, "Unfinished") == 0) {
+        strcpy(formatted, "Unfinished");
+    } else {
+        // Fallback to original format if unrecognized
+        strncpy(formatted, sgf_result, sizeof(formatted) - 1);
+        formatted[sizeof(formatted) - 1] = '\0';
+    }
+
+    return formatted;
+}
+
+void render_result_message(const BoardView *view) {
+    if (!game_finished || result_message[0] == '\0') return;
+
+    const char *display_text = format_result_message(result_message);
+
+    int scale = (view->square >= 30) ? 3 : 2;
+    int margin = (view->square >= 30) ? 16 : 8;
+    int text_w = text_width_px(display_text, scale);
+    int text_h = 7 * scale;
+    int pad = (scale >= 3) ? 4 : 3;
+
+    // Position to the right of the board, vertically centered
+    int x = view->offset_x + view->board_px + margin;
+    int y = view->offset_y + (view->board_px - text_h) / 2; // Vertically centered
+
+    // Semi-transparent background
+    SDL_Rect bg = {x - pad, y - pad, text_w + pad * 2, text_h + pad * 2};
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(renderer, 80, 80, 80, 200);
+    SDL_RenderFillRect(renderer, &bg);
+
+    // Text
+    SDL_Color text_color = {255, 255, 255, 255};
+    draw_text(x, y, scale, display_text, text_color);
+}
 void render_catalog_overlay(const BoardView *view);
 void catalog_free(void);
 void catalog_open(const char *games_dir);
@@ -1002,6 +1076,7 @@ void reset_board(void) {
     stone_count = 0;
     analysis_stone_count = 0;
     board_state_count = 0;
+    game_finished = 0;
 }
 
 void add_stone(int r, int f, int is_black) {
@@ -1167,9 +1242,12 @@ void render_board(const BoardView *view, const Overlay *overlay) {
     SDL_SetRenderDrawColor(renderer, 50, 50, 50, 255);
     SDL_RenderClear(renderer);
 
-    // Draw board background
-    SDL_Color board_bg = {95, 115, 150, 255};  // Slightly more blue background
-    SDL_SetRenderDrawColor(renderer, board_bg.r, board_bg.g, board_bg.b, board_bg.a);
+    // Draw board background - different color when paused
+    if (paused) {
+        SDL_SetRenderDrawColor(renderer, 70, 80, 100, 255);  // Darker when paused
+    } else {
+        SDL_SetRenderDrawColor(renderer, 95, 115, 150, 255);  // Normal color
+    }
     SDL_Rect board_rect = {view->offset_x, view->offset_y, view->board_px, view->board_px};
     SDL_RenderFillRect(renderer, &board_rect);
 
@@ -1250,9 +1328,12 @@ void render_board(const BoardView *view, const Overlay *overlay) {
         }
     }
 
+
+
     render_player_labels(view);
     render_speed_label(view);
     render_guess_score(view);
+    render_result_message(view);
     render_help_overlay(view);
     render_catalog_overlay(view);
 
@@ -1381,11 +1462,18 @@ int load_sgf_game(const char *path, char moves[][MOVE_TEXT_LEN], int max_moves,
 }
 
 int play_game(char moves[][MOVE_TEXT_LEN], int move_count, const char *result) {
+    // Store the game result for display
+    if (result && result[0]) {
+        strncpy(result_message, result, sizeof(result_message) - 1);
+        result_message[sizeof(result_message) - 1] = '\0';
+    } else {
+        result_message[0] = '\0';
+    }
+
     reset_board();
     draw_board();
 
     int index = 0;
-    int paused = 0;
     int quit = 0;
     Uint32 last_move_tick = SDL_GetTicks();
     game_nav_request = GAME_NAV_NONE;
@@ -1636,7 +1724,14 @@ int play_game(char moves[][MOVE_TEXT_LEN], int move_count, const char *result) {
                 last_move_tick = now;
             }
         } else if (index >= move_count) {
-            break;
+            game_finished = 1;
+            // Allow pausing on the final position - don't break immediately
+            if (!paused) {
+                // Auto-pause on final position for score counting
+                paused = 1;
+                last_move_tick = SDL_GetTicks();
+                draw_board();
+            }
         }
 
         SDL_Delay(10);
@@ -1650,6 +1745,14 @@ int play_game(char moves[][MOVE_TEXT_LEN], int move_count, const char *result) {
         if (now - pause_start >= (Uint32)pause_ms) {
             break;
         }
+
+        // Render the final board state with result message
+        BoardView view;
+        get_board_view(&view);
+        render_board(&view, NULL);
+        render_result_message(&view);
+        SDL_RenderPresent(renderer);
+
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
             note_mouse_activity_event(&e);
