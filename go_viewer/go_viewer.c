@@ -117,6 +117,8 @@ typedef struct {
     char board[BOARD_SIZE][BOARD_SIZE];
     Stone stones[MAX_MOVES];
     int stone_count;
+    int black_prisoners;
+    int white_prisoners;
 } BoardState;
 
 Stone stones[MAX_MOVES];
@@ -126,6 +128,9 @@ int analysis_stone_count = 0;
 
 BoardState board_states[MAX_MOVES];
 int board_state_count = 0;
+
+int black_prisoners = 0;
+int white_prisoners = 0;
 
 int adjust_move_delay(int delta_ms, Uint32 now);
 void board_to_screen(const BoardView *view, int board_r, int board_f, int *out_x, int *out_y);
@@ -237,7 +242,7 @@ void add_stone(int r, int f, int is_black);
 void remove_last_stone(void);
 int is_surrounded(int r, int f, int color);
 int would_be_suicide(int r, int f, int color);
-void remove_captured_stones(int skip_color, int skip_r, int skip_f);
+void remove_captured_stones(int skip_color, int skip_r, int skip_f, int placed_stone_color);
 void get_group(int r, int f, int color, int visited[BOARD_SIZE][BOARD_SIZE], int *group_count, int group_r[], int group_f[]);
 int has_liberties(int r, int f, int color, int visited[BOARD_SIZE][BOARD_SIZE]);
 
@@ -262,7 +267,7 @@ int would_be_suicide(int r, int f, int color) {
     board[r][f] = (char)(color ? 1 : 2);
 
     // Remove any captured opponent stones (skip stones of the placed stone's color)
-    remove_captured_stones(color, -1, -1);
+    remove_captured_stones(color, -1, -1, color);
 
     // Now check if our stone group has liberties
     int visited[BOARD_SIZE][BOARD_SIZE] = {0};
@@ -278,10 +283,11 @@ int would_be_suicide(int r, int f, int color) {
     return suicide;
 }
 
-void remove_captured_stones(int skip_color, int skip_r, int skip_f) {
+void remove_captured_stones(int skip_color, int skip_r, int skip_f, int placed_stone_color) {
     // First pass: identify all stones to be captured
     int to_capture[BOARD_SIZE][BOARD_SIZE] = {0};
     int processed[BOARD_SIZE][BOARD_SIZE] = {0};
+    int captured_count = 0;
 
     for (int r = 0; r < BOARD_SIZE; r++) {
         for (int f = 0; f < BOARD_SIZE; f++) {
@@ -312,6 +318,7 @@ void remove_captured_stones(int skip_color, int skip_r, int skip_f) {
                         int gf = group_f[i];
                         to_capture[gr][gf] = 1;
                         processed[gr][gf] = 1;
+                        captured_count++;
                     }
                 } else {
                     // Mark the group as processed
@@ -326,6 +333,15 @@ void remove_captured_stones(int skip_color, int skip_r, int skip_f) {
                     }
                 }
             }
+        }
+    }
+
+    // Update prisoner counts
+    if (captured_count > 0) {
+        if (placed_stone_color == 1) { // Black placed the stone, so white stones were captured
+            white_prisoners += captured_count;
+        } else { // White placed the stone, so black stones were captured
+            black_prisoners += captured_count;
         }
     }
 
@@ -1040,12 +1056,25 @@ void render_player_labels(const BoardView *view) {
     int white_len = (int)strlen(white_name);
     if (white_len > max_len) max_len = white_len;
 
+    // Create prisoner count strings
+    char black_prisoner_str[32];
+    char white_prisoner_str[32];
+    snprintf(black_prisoner_str, sizeof(black_prisoner_str), "Prisoners: %d", black_prisoners);
+    snprintf(white_prisoner_str, sizeof(white_prisoner_str), "Prisoners: %d", white_prisoners);
+
+    int prisoner_len = (int)strlen(black_prisoner_str);
+    int white_prisoner_len = (int)strlen(white_prisoner_str);
+    if (white_prisoner_len > prisoner_len) prisoner_len = white_prisoner_len;
+    if (prisoner_len > max_len) max_len = prisoner_len;
+
     int scale = 3;
     int need_w = (max_len > 0) ? text_width_px(black_name, scale) : 0;
     if (white_len > 0) {
         int white_w = text_width_px(white_name, scale);
         if (white_w > need_w) need_w = white_w;
     }
+    int prisoner_w = text_width_px(black_prisoner_str, scale);
+    if (prisoner_w > need_w) need_w = prisoner_w;
     if (need_w > avail_text_w && max_len > 0) {
         int denom = max_len * 6 - 1;
         scale = avail_text_w / denom;
@@ -1055,10 +1084,11 @@ void render_player_labels(const BoardView *view) {
     int text_h = 7 * scale;
     if (swatch_size > text_h) swatch_size = text_h;
     int top_y = view->offset_y + margin;
-    int bottom_y = view->offset_y + view->board_px - margin - text_h;
+    int bottom_y = view->offset_y + view->board_px - margin - text_h * 2 - 2; // Space for two lines
     if (bottom_y < top_y) bottom_y = top_y;
 
     SDL_Color text_color = {230, 230, 230, 255};
+    SDL_Color prisoner_color = {120, 120, 120, 255}; // Even darker than text_color
     SDL_Color black_fill = {20, 20, 20, 255};
     SDL_Color white_fill = {230, 230, 230, 255};
     SDL_Color outline = {30, 30, 30, 255};
@@ -1068,9 +1098,11 @@ void render_player_labels(const BoardView *view) {
 
     draw_color_swatch(right_x0, swatch_y_top, swatch_size, black_fill, white_fill);
     draw_text(right_x0 + swatch_size + gap, top_y, scale, black_name, text_color);
+    draw_text(right_x0 + swatch_size + gap, top_y + text_h + 8, scale, black_prisoner_str, prisoner_color);
 
     draw_color_swatch(right_x0, swatch_y_bottom, swatch_size, white_fill, outline);
     draw_text(right_x0 + swatch_size + gap, bottom_y, scale, white_name, text_color);
+    draw_text(right_x0 + swatch_size + gap, bottom_y + text_h + 8, scale, white_prisoner_str, prisoner_color);
 }
 
 void reset_board(void) {
@@ -1079,6 +1111,8 @@ void reset_board(void) {
     analysis_stone_count = 0;
     board_state_count = 0;
     game_finished = 0;
+    black_prisoners = 0;
+    white_prisoners = 0;
 }
 
 void add_stone(int r, int f, int is_black) {
@@ -1129,6 +1163,8 @@ void save_board_state(void) {
     memcpy(board_states[board_state_count].board, board, sizeof(board));
     memcpy(board_states[board_state_count].stones, stones, sizeof(stones));
     board_states[board_state_count].stone_count = stone_count;
+    board_states[board_state_count].black_prisoners = black_prisoners;
+    board_states[board_state_count].white_prisoners = white_prisoners;
     board_state_count++;
 }
 
@@ -1137,6 +1173,8 @@ void restore_board_state(int state_index) {
     memcpy(board, board_states[state_index].board, sizeof(board));
     memcpy(stones, board_states[state_index].stones, sizeof(stones));
     stone_count = board_states[state_index].stone_count;
+    black_prisoners = board_states[state_index].black_prisoners;
+    white_prisoners = board_states[state_index].white_prisoners;
     board_state_count = state_index + 1;  // Truncate states after this point
 }
 
@@ -1299,7 +1337,7 @@ void render_board(const BoardView *view, const Overlay *overlay) {
         {9, 3}, {9, 9}, {9, 15},
         {15, 3}, {15, 9}, {15, 15}
     };
-    int star_radius = (view->square >= 30) ? 3 : 2;
+    int star_radius = (view->square >= 30) ? 4 : 3;
     for (int i = 0; i < 9; i++) {
         int r = star_points[i][0];
         int f = star_points[i][1];
@@ -1359,7 +1397,7 @@ int animate_move(int r, int f, int is_black) {
     // Just place the stone immediately - no animation
     add_stone(r, f, is_black);
     // Remove captured stones (skip the placed stone)
-    remove_captured_stones(-1, r, f);
+    remove_captured_stones(-1, r, f, is_black);
     // Save the board state after the move
     save_board_state();
     draw_board();
@@ -1619,7 +1657,7 @@ int play_game(char moves[][MOVE_TEXT_LEN], int move_count, const char *result) {
                         }
                         add_analysis_stone(r, f, stone_color);
                         // Remove captured stones (skip the placed stone)
-                        remove_captured_stones(-1, r, f);
+                        remove_captured_stones(-1, r, f, stone_color);
                         if (forced_color == -1) {
                             // Only alternate if not forcing a specific color
                             analysis_turn_is_black = !analysis_turn_is_black;
