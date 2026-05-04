@@ -483,6 +483,8 @@ void render_help_overlay(const BoardView *view) {
         "  LEFT/RIGHT: STEP MOVES",
         "ANALYSIS (A):",
         "  LEFT CLICK: PLACE STONE",
+        "  HOLD B: FORCE BLACK STONES",
+        "  HOLD W: FORCE WHITE STONES",
         "  RIGHT CLICK: REMOVE STONE",
         "GUESS MODE (G):",
         "  LEFT CLICK: GUESS MOVE",
@@ -1166,7 +1168,7 @@ void render_board(const BoardView *view, const Overlay *overlay) {
     SDL_RenderClear(renderer);
 
     // Draw board background
-    SDL_Color board_bg = {100, 120, 140, 255};  // Subdued bluish grey
+    SDL_Color board_bg = {95, 115, 150, 255};  // Slightly more blue background
     SDL_SetRenderDrawColor(renderer, board_bg.r, board_bg.g, board_bg.b, board_bg.a);
     SDL_Rect board_rect = {view->offset_x, view->offset_y, view->board_px, view->board_px};
     SDL_RenderFillRect(renderer, &board_rect);
@@ -1502,20 +1504,39 @@ int play_game(char moves[][MOVE_TEXT_LEN], int move_count, const char *result) {
                 int r = -1;
                 int f = -1;
                 if (screen_to_board(&view, e.button.x, e.button.y, &r, &f)) {
+                    // Check keyboard state for forced stone color
+                    const Uint8 *keystate = SDL_GetKeyboardState(NULL);
+                    int forced_color = -1; // -1 means alternate normally
+                    if (keystate[SDL_SCANCODE_B]) {
+                        forced_color = 1; // Force black
+                    } else if (keystate[SDL_SCANCODE_W]) {
+                        forced_color = 0; // Force white
+                    }
+
+                    int stone_color = (forced_color != -1) ? forced_color : analysis_turn_is_black;
+
                     if (board[r][f] == 0) {
                         // Check for suicide
-                        if (would_be_suicide(r, f, analysis_turn_is_black)) {
-                            // Don't place the stone - suicide not allowed, but still alternate color
-                            analysis_turn_is_black = !analysis_turn_is_black;
+                        if (would_be_suicide(r, f, stone_color)) {
+                            // Don't place the stone - suicide not allowed
+                            if (forced_color == -1) {
+                                // Only alternate if not forcing a specific color
+                                analysis_turn_is_black = !analysis_turn_is_black;
+                            }
                             continue;
                         }
-                        add_analysis_stone(r, f, analysis_turn_is_black);
+                        add_analysis_stone(r, f, stone_color);
                         // Remove captured stones (skip the placed stone)
                         remove_captured_stones(-1, r, f);
-                        analysis_turn_is_black = !analysis_turn_is_black;
+                        if (forced_color == -1) {
+                            // Only alternate if not forcing a specific color
+                            analysis_turn_is_black = !analysis_turn_is_black;
+                        }
                     } else {
-                        // Click on occupied space - still alternate color
-                        analysis_turn_is_black = !analysis_turn_is_black;
+                        // Click on occupied space - still alternate color if not forcing
+                        if (forced_color == -1) {
+                            analysis_turn_is_black = !analysis_turn_is_black;
+                        }
                     }
                 }
             } else if (analysis_mode && e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_RIGHT) {
