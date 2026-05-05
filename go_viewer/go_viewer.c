@@ -67,6 +67,7 @@ int analysis_mode = 0;
 int show_help = 0;
 int guess_mode = 0;
 int guess_score = 0;
+int chain_mode = 0;
 int turn_is_black = 1;
 int analysis_turn_is_black = 1;
 int game_nav_request = GAME_NAV_NONE;
@@ -143,6 +144,7 @@ int load_sgf_game(const char *path, char moves[][MOVE_TEXT_LEN], int max_moves,
                   char *white_name, size_t white_name_size,
                   char *result, size_t result_size);
 void render_board(const BoardView *view, const Overlay *overlay);
+void render_chain_connections(const BoardView *view);
 void draw_board();
 int animate_move(int r, int f, int is_black);
 int play_game(char moves[][MOVE_TEXT_LEN], int move_count, const char *result);
@@ -571,6 +573,7 @@ void render_help_overlay(const BoardView *view) {
         "PLAYBACK:",
         "  SPACE: PAUSE/RESUME",
         "  A: TOGGLE ANALYSIS",
+        "  U: TOGGLE CHAIN MODE",
         "  G: TOGGLE GUESS MODE",
         "PAUSED (SPACE):",
         "  LEFT/RIGHT: STEP MOVES",
@@ -1281,6 +1284,74 @@ void get_board_view(BoardView *view) {
     view->screen_h = screen_h;
 }
 
+void render_chain_connections(const BoardView *view) {
+    if (!chain_mode) return;
+
+    // Track which connections we've already drawn to avoid duplicates
+    int connections_drawn[BOARD_SIZE][BOARD_SIZE][4] = {0}; // 4 directions: up, right, down, left
+
+    // Iterate through all stones on the board
+    for (int r = 0; r < BOARD_SIZE; r++) {
+        for (int f = 0; f < BOARD_SIZE; f++) {
+            if (board[r][f] == 0) continue;
+
+            int color = (board[r][f] == 1) ? 1 : 0;
+
+            // Find the connected group for this stone
+            int visited[BOARD_SIZE][BOARD_SIZE] = {0};
+            int group_r[BOARD_SIZE * BOARD_SIZE];
+            int group_f[BOARD_SIZE * BOARD_SIZE];
+            int group_count = 0;
+            get_group(r, f, color, visited, &group_count, group_r, group_f);
+
+            // Draw connections between adjacent stones in the group
+            for (int i = 0; i < group_count; i++) {
+                int sr = group_r[i];
+                int sf = group_f[i];
+
+                // Check adjacent positions
+                int adj_positions[4][2] = {
+                    {sr - 1, sf}, // up
+                    {sr, sf + 1}, // right
+                    {sr + 1, sf}, // down
+                    {sr, sf - 1}  // left
+                };
+
+                for (int dir = 0; dir < 4; dir++) {
+                    int ar = adj_positions[dir][0];
+                    int af = adj_positions[dir][1];
+
+                    // Check if adjacent position is in bounds and has the same color stone
+                    if (ar >= 0 && ar < BOARD_SIZE && af >= 0 && af < BOARD_SIZE &&
+                        board[ar][af] != 0 && (board[ar][af] == board[sr][sf])) {
+
+                        // Check if this connection has already been drawn from the other side
+                        int reverse_dir = (dir + 2) % 4; // opposite direction
+                        if (!connections_drawn[sr][sf][dir] && !connections_drawn[ar][af][reverse_dir]) {
+                            // Mark this connection as drawn
+                            connections_drawn[sr][sf][dir] = 1;
+                            connections_drawn[ar][af][reverse_dir] = 1;
+
+                            // Draw line between stone centers
+                            int x1 = view->offset_x + sf * view->square + view->square / 2;
+                            int y1 = view->offset_y + sr * view->square + view->square / 2;
+                            int x2 = view->offset_x + af * view->square + view->square / 2;
+                            int y2 = view->offset_y + ar * view->square + view->square / 2;
+
+                            // Use stone color for the connection lines
+                            SDL_Color line_color = color ? (SDL_Color){30, 30, 30, 255} : (SDL_Color){240, 240, 240, 255};
+                            // Make lines 3/4 the diameter of the stone circles
+                            int stone_diameter = view->square - 4;  // stone radius is square/2 - 2, so diameter is square - 4
+                            int thickness = (stone_diameter * 3) / 4;
+                            draw_thick_line(x1, y1, x2, y2, thickness, line_color);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 void render_board(const BoardView *view, const Overlay *overlay) {
     SDL_SetRenderDrawColor(renderer, 50, 50, 50, 255);
     SDL_RenderClear(renderer);
@@ -1353,6 +1424,9 @@ void render_board(const BoardView *view, const Overlay *overlay) {
         SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
         SDL_RenderFillRect(renderer, &star_rect);
     }
+
+    // Draw chain connections (before stones so lines appear behind them)
+    render_chain_connections(view);
 
     // Draw stones
     for (int i = 0; i < stone_count; i++) {
@@ -1597,6 +1671,9 @@ int play_game(char moves[][MOVE_TEXT_LEN], int move_count, const char *result) {
                         turn_is_black = 1;  // Always start with Black in analysis mode
                         set_cursor_visible(1);  // Update cursor when entering analysis mode
                     }
+                    draw_board();
+                } else if (key == SDLK_u) {
+                    chain_mode = !chain_mode;
                     draw_board();
                 } else if (key == SDLK_g) {
                     if (guess_mode) {
