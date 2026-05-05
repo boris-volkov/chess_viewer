@@ -30,7 +30,7 @@
 #define MOVE_ANIM_MS 300
 #define NAME_LEN 128
 #define RESULT_LEN 16
-#define GAME_OVER_PAUSE_MS 5000
+#define GAME_OVER_PAUSE_MS 20000
 
 #define SPEED_MESSAGE_MS 1500
 #define CURSOR_IDLE_MS 2500
@@ -211,14 +211,8 @@ void render_result_message(const BoardView *view) {
     int x = view->offset_x + view->board_px + margin;
     int y = view->offset_y + (view->board_px - text_h) / 2; // Vertically centered
 
-    // Semi-transparent background
-    SDL_Rect bg = {x - pad, y - pad, text_w + pad * 2, text_h + pad * 2};
-    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
-    SDL_SetRenderDrawColor(renderer, 80, 80, 80, 200);
-    SDL_RenderFillRect(renderer, &bg);
-
     // Text
-    SDL_Color text_color = {255, 255, 255, 255};
+    SDL_Color text_color = {255, 255, 180, 255};
     draw_text(x, y, scale, display_text, text_color);
 }
 void render_catalog_overlay(const BoardView *view);
@@ -1789,6 +1783,8 @@ int play_game(char moves[][MOVE_TEXT_LEN], int move_count, const char *result) {
             if (game_finished_timer == 0) {
                 game_finished_timer = SDL_GetTicks();
             }
+            // Render the final board state with result message
+            draw_board();
             // Automatically advance to next game after GAME_OVER_PAUSE_MS
             if (SDL_GetTicks() - game_finished_timer >= GAME_OVER_PAUSE_MS) {
                 game_nav_request = GAME_NAV_NEXT;
