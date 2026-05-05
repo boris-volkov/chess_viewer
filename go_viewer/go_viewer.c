@@ -136,6 +136,10 @@ int white_prisoners = 0;
 int analysis_saved_black_prisoners = 0;
 int analysis_saved_white_prisoners = 0;
 
+int liberty_r[BOARD_SIZE * BOARD_SIZE];
+int liberty_f[BOARD_SIZE * BOARD_SIZE];
+int liberty_count = 0;
+
 int adjust_move_delay(int delta_ms, Uint32 now);
 void board_to_screen(const BoardView *view, int board_r, int board_f, int *out_x, int *out_y);
 int parse_sgf_move(const char *move_str, int *out_r, int *out_f);
@@ -145,6 +149,29 @@ int load_sgf_game(const char *path, char moves[][MOVE_TEXT_LEN], int max_moves,
                   char *result, size_t result_size);
 void render_board(const BoardView *view, const Overlay *overlay);
 void render_chain_connections(const BoardView *view);
+void render_liberties(const BoardView *view) {
+    if (liberty_count == 0) return;
+
+    SDL_SetRenderDrawColor(renderer, 255, 0, 0, 255); // Red color for liberty dots
+
+    for (int i = 0; i < liberty_count; i++) {
+        int r = liberty_r[i];
+        int f = liberty_f[i];
+        int x = view->offset_x + f * view->square + view->square / 2;
+        int y = view->offset_y + r * view->square + view->square / 2;
+        int radius = view->square / 8; // Small dot radius
+        if (radius < 2) radius = 2;
+
+        // Draw filled circle for liberty dot
+        for (int dy = -radius; dy <= radius; dy++) {
+            for (int dx = -radius; dx <= radius; dx++) {
+                if (dx*dx + dy*dy <= radius*radius) {
+                    SDL_RenderDrawPoint(renderer, x + dx, y + dy);
+                }
+            }
+        }
+    }
+}
 void draw_board();
 int animate_move(int r, int f, int is_black);
 int play_game(char moves[][MOVE_TEXT_LEN], int move_count, const char *result);
@@ -244,6 +271,18 @@ int would_be_suicide(int r, int f, int color);
 void remove_captured_stones(int skip_color, int skip_r, int skip_f, int placed_stone_color);
 void get_group(int r, int f, int color, int visited[BOARD_SIZE][BOARD_SIZE], int *group_count, int group_r[], int group_f[]);
 int has_liberties(int r, int f, int color, int visited[BOARD_SIZE][BOARD_SIZE]);
+void get_liberties(int r, int f, int color, int visited[BOARD_SIZE][BOARD_SIZE]);
+void calculate_chain_liberties(int r, int f) {
+    // Reset liberty count
+    liberty_count = 0;
+
+    // Get the color of the clicked stone
+    int color = (board[r][f] == 1) ? 1 : 0;
+
+    // Find liberties for the chain
+    int visited[BOARD_SIZE][BOARD_SIZE] = {0};
+    get_liberties(r, f, color, visited);
+}
 
 // Go rules implementation for analysis mode
 int is_surrounded(int r, int f, int color) {
@@ -423,6 +462,41 @@ int has_liberties(int r, int f, int color, int visited[BOARD_SIZE][BOARD_SIZE]) 
     return 0;
 }
 
+void get_liberties(int r, int f, int color, int visited[BOARD_SIZE][BOARD_SIZE]) {
+    if (r < 0 || r >= BOARD_SIZE || f < 0 || f >= BOARD_SIZE || visited[r][f]) {
+        return;
+    }
+
+    if (board[r][f] == 0) {
+        // Found a liberty - add it to the list if not already present
+        int already_present = 0;
+        for (int i = 0; i < liberty_count; i++) {
+            if (liberty_r[i] == r && liberty_f[i] == f) {
+                already_present = 1;
+                break;
+            }
+        }
+        if (!already_present && liberty_count < BOARD_SIZE * BOARD_SIZE) {
+            liberty_r[liberty_count] = r;
+            liberty_f[liberty_count] = f;
+            liberty_count++;
+        }
+        return;
+    }
+
+    if (board[r][f] != (color ? 1 : 2)) {
+        return; // Opponent's stone
+    }
+
+    visited[r][f] = 1;
+
+    // Check adjacent intersections
+    get_liberties(r - 1, f, color, visited);
+    get_liberties(r + 1, f, color, visited);
+    get_liberties(r, f - 1, color, visited);
+    get_liberties(r, f + 1, color, visited);
+}
+
 static const Glyph font_glyphs[] = {
     {' ', {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
     {'-', {0x00, 0x00, 0x00, 0x1F, 0x00, 0x00, 0x00}},
@@ -578,7 +652,8 @@ void render_help_overlay(const BoardView *view) {
         "PAUSED (SPACE):",
         "  LEFT/RIGHT: STEP MOVES",
         "ANALYSIS (A):",
-        "  LEFT CLICK: PLACE STONE",
+        "  LEFT CLICK STONE: SHOW LIBERTIES",
+        "  LEFT CLICK EMPTY: PLACE STONE",
         "  HOLD B: FORCE BLACK STONES",
         "  HOLD W: FORCE WHITE STONES",
         "  RIGHT CLICK: REMOVE STONE",
@@ -1244,8 +1319,8 @@ void draw_thick_line(int x1, int y1, int x2, int y2, int thickness, SDL_Color co
         SDL_RenderDrawPoint(renderer, x1, y1);
         return;
     }
-    float nx = -dy / len;
-    float ny = dx / len;
+    float nx = dy / len;
+    float ny = -dx / len;
     float half = (float)thickness * 0.5f;
     float ox = nx * half;
     float oy = ny * half;
@@ -1340,9 +1415,9 @@ void render_chain_connections(const BoardView *view) {
 
                             // Use stone color for the connection lines
                             SDL_Color line_color = color ? (SDL_Color){30, 30, 30, 255} : (SDL_Color){240, 240, 240, 255};
-                            // Make lines 3/4 the diameter of the stone circles
+                            // Make lines 1/2 the diameter of the stone circles
                             int stone_diameter = view->square - 4;  // stone radius is square/2 - 2, so diameter is square - 4
-                            int thickness = (stone_diameter * 3) / 4;
+                            int thickness = stone_diameter / 2;
                             draw_thick_line(x1, y1, x2, y2, thickness, line_color);
                         }
                     }
@@ -1439,6 +1514,9 @@ void render_board(const BoardView *view, const Overlay *overlay) {
         Stone *stone = &analysis_stones[i];
         draw_stone_circle(view, stone->r, stone->f, stone->is_black, 255);
     }
+
+    // Draw liberty dots
+    render_liberties(view);
 
     if (overlay && overlay->active) {
         // Semi-transparent for preview - convert screen coordinates to board coordinates
@@ -1657,6 +1735,8 @@ int play_game(char moves[][MOVE_TEXT_LEN], int move_count, const char *result) {
                     if (analysis_mode) {
                         analysis_mode = 0;
                         clear_analysis_stones();
+                        // Clear liberty display when exiting analysis mode
+                        liberty_count = 0;
                         // Restore prisoner counts from before analysis mode
                         black_prisoners = analysis_saved_black_prisoners;
                         white_prisoners = analysis_saved_white_prisoners;
@@ -1665,6 +1745,8 @@ int play_game(char moves[][MOVE_TEXT_LEN], int move_count, const char *result) {
                     } else {
                         analysis_mode = 1;
                         analysis_dragging = 0;
+                        // Clear liberty display when entering analysis mode
+                        liberty_count = 0;
                         // Save current prisoner counts before entering analysis mode
                         analysis_saved_black_prisoners = black_prisoners;
                         analysis_saved_white_prisoners = white_prisoners;
@@ -1680,6 +1762,8 @@ int play_game(char moves[][MOVE_TEXT_LEN], int move_count, const char *result) {
                         guess_mode = 0;
                         guess_dragging = 0;
                         guess_pending = 0;
+                        // Clear liberty display when exiting guess mode
+                        liberty_count = 0;
                     } else {
                         if (analysis_mode) {
                             analysis_mode = 0;
@@ -1689,6 +1773,8 @@ int play_game(char moves[][MOVE_TEXT_LEN], int move_count, const char *result) {
                         guess_mode = 1;
                         guess_dragging = 0;
                         guess_pending = 0;
+                        // Clear liberty display when entering guess mode
+                        liberty_count = 0;
                     }
                     guess_score = 0;
                     draw_board();
@@ -1723,18 +1809,21 @@ int play_game(char moves[][MOVE_TEXT_LEN], int move_count, const char *result) {
                 int r = -1;
                 int f = -1;
                 if (screen_to_board(&view, e.button.x, e.button.y, &r, &f)) {
-                    // Check keyboard state for forced stone color
-                    const Uint8 *keystate = SDL_GetKeyboardState(NULL);
-                    int forced_color = -1; // -1 means alternate normally
-                    if (keystate[SDL_SCANCODE_B]) {
-                        forced_color = 1; // Force black
-                    } else if (keystate[SDL_SCANCODE_W]) {
-                        forced_color = 0; // Force white
-                    }
+                    if (board[r][f] != 0) {
+                        // Click on existing stone - show liberties of the chain
+                        calculate_chain_liberties(r, f);
+                    } else {
+                        // Check keyboard state for forced stone color
+                        const Uint8 *keystate = SDL_GetKeyboardState(NULL);
+                        int forced_color = -1; // -1 means alternate normally
+                        if (keystate[SDL_SCANCODE_B]) {
+                            forced_color = 1; // Force black
+                        } else if (keystate[SDL_SCANCODE_W]) {
+                            forced_color = 0; // Force white
+                        }
 
-                    int stone_color = (forced_color != -1) ? forced_color : analysis_turn_is_black;
+                        int stone_color = (forced_color != -1) ? forced_color : analysis_turn_is_black;
 
-                    if (board[r][f] == 0) {
                         // Check for suicide
                         if (would_be_suicide(r, f, stone_color)) {
                             // Don't place the stone - suicide not allowed
@@ -1751,11 +1840,8 @@ int play_game(char moves[][MOVE_TEXT_LEN], int move_count, const char *result) {
                             // Only alternate if not forcing a specific color
                             analysis_turn_is_black = !analysis_turn_is_black;
                         }
-                    } else {
-                        // Click on occupied space - still alternate color if not forcing
-                        if (forced_color == -1) {
-                            analysis_turn_is_black = !analysis_turn_is_black;
-                        }
+                        // Clear liberty display when placing a new stone
+                        liberty_count = 0;
                     }
                 }
             } else if (analysis_mode && e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_RIGHT) {
