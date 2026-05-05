@@ -71,6 +71,7 @@ int turn_is_black = 1;
 int analysis_turn_is_black = 1;
 int game_nav_request = GAME_NAV_NONE;
 int game_finished = 0;
+Uint32 game_finished_timer = 0;
 int paused = 0;
 int catalog_active = 0;
 int catalog_selection_made = 0;
@@ -1117,8 +1118,10 @@ void reset_board(void) {
     analysis_stone_count = 0;
     board_state_count = 0;
     game_finished = 0;
+    game_finished_timer = 0;  // Reset timer for new games
     black_prisoners = 0;
     white_prisoners = 0;
+    paused = 0;  // Ensure new games start unpaused
 }
 
 void add_stone(int r, int f, int is_black) {
@@ -1782,12 +1785,14 @@ int play_game(char moves[][MOVE_TEXT_LEN], int move_count, const char *result) {
             }
         } else if (index >= move_count) {
             game_finished = 1;
-            // Allow pausing on the final position - don't break immediately
-            if (!paused) {
-                // Auto-pause on final position for score counting
-                paused = 1;
-                last_move_tick = SDL_GetTicks();
-                draw_board();
+            // Game finished - start timer for automatic next game
+            if (game_finished_timer == 0) {
+                game_finished_timer = SDL_GetTicks();
+            }
+            // Automatically advance to next game after GAME_OVER_PAUSE_MS
+            if (SDL_GetTicks() - game_finished_timer >= GAME_OVER_PAUSE_MS) {
+                game_nav_request = GAME_NAV_NEXT;
+                quit = 1;
             }
         }
 
@@ -1843,6 +1848,11 @@ int play_game(char moves[][MOVE_TEXT_LEN], int move_count, const char *result) {
                 } else if (key == SDLK_ESCAPE) {
                     show_help = !show_help;
                     draw_board();
+                } else if (key == SDLK_SPACE) {
+                    if (!analysis_mode && !guess_mode) {
+                        paused = !paused;
+                        draw_board();
+                    }
                 } else if (key == SDLK_UP || key == SDLK_DOWN) {
                     Uint32 tick_now = SDL_GetTicks();
                     int delta = (key == SDLK_UP) ? MOVE_DELAY_STEP_MS : -MOVE_DELAY_STEP_MS;
