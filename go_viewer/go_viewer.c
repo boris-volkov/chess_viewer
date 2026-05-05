@@ -1291,6 +1291,9 @@ void render_board(const BoardView *view, const Overlay *overlay) {
     // Draw board background - different color when paused
     if (paused) {
         SDL_SetRenderDrawColor(renderer, 70, 80, 100, 255);  // Darker when paused
+		}
+		else if (analysis_mode){
+        SDL_SetRenderDrawColor(renderer, 110, 115, 150, 255);  // Analysis color
     } else {
         SDL_SetRenderDrawColor(renderer, 95, 115, 150, 255);  // Normal color
     }
