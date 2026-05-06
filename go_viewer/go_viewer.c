@@ -443,9 +443,11 @@ void remove_captured_stones(int skip_color, int skip_r, int skip_f, int placed_s
                     for (int i = 0; i < group_count; i++) {
                         int gr = group_r[i];
                         int gf = group_f[i];
-                        to_capture[gr][gf] = 1;
+                        if (!(gr == skip_r && gf == skip_f)) {
+                            to_capture[gr][gf] = 1;
+                            captured_count++;
+                        }
                         processed[gr][gf] = 1;
-                        captured_count++;
                     }
                 } else {
                     // Mark the group as processed
@@ -502,6 +504,22 @@ void remove_captured_stones(int skip_color, int skip_r, int skip_f, int placed_s
                     }
                 }
             }
+        }
+    }
+
+    // Check if selected group was captured
+    if (selected_group_count > 0) {
+        int still_valid = 1;
+        for (int i = 0; i < selected_group_count; i++) {
+            int r = selected_group_stones[i][0];
+            int f = selected_group_stones[i][1];
+            if (board[r][f] == 0) {
+                still_valid = 0;
+                break;
+            }
+        }
+        if (!still_valid) {
+            selected_group_count = 0;
         }
     }
 }
@@ -1949,18 +1967,50 @@ int play_game(char moves[][MOVE_TEXT_LEN], int move_count, const char *result) {
 
                         int stone_color = (forced_color != -1) ? forced_color : analysis_turn_is_black;
 
-                        // Check for suicide
-                        if (would_be_suicide(r, f, stone_color)) {
-                            // Don't place the stone - suicide not allowed
-                            if (forced_color == -1) {
-                                // Only alternate if not forcing a specific color
-                                analysis_turn_is_black = !analysis_turn_is_black;
-                            }
-                            continue;
+                        // Check if move is allowed in analysis mode
+                        // Save current state
+                        char saved_board[BOARD_SIZE][BOARD_SIZE];
+                        memcpy(saved_board, board, sizeof(board));
+                        Stone saved_stones[MAX_MOVES];
+                        memcpy(saved_stones, stones, sizeof(stones));
+                        int saved_stone_count = stone_count;
+                        Stone saved_analysis_stones[MAX_MOVES];
+                        memcpy(saved_analysis_stones, analysis_stones, sizeof(analysis_stones));
+                        int saved_analysis_stone_count = analysis_stone_count;
+                        int saved_black_prisoners = black_prisoners;
+                        int saved_white_prisoners = white_prisoners;
+
+                        // Temporarily place the stone
+                        board[r][f] = (char)(stone_color ? 1 : 2);
+
+                        // Remove captured opponent stones (skip the placed stone's color)
+                        remove_captured_stones(stone_color, -1, -1, stone_color);
+
+                        // Check if the placed stone has liberties
+                        int visited[BOARD_SIZE][BOARD_SIZE] = {0};
+                        int has_libs = has_liberties(r, f, stone_color, visited);
+
+                        // Count captured stones
+                        int captured_count = (stone_color ? black_prisoners - saved_black_prisoners : white_prisoners - saved_white_prisoners);
+
+                        // Allow if has liberties OR (no liberties but captured something)
+                        int allow_move = has_libs || (!has_libs && captured_count > 0);
+
+                        // Restore state
+                        memcpy(board, saved_board, sizeof(board));
+                        memcpy(stones, saved_stones, sizeof(stones));
+                        stone_count = saved_stone_count;
+                        memcpy(analysis_stones, saved_analysis_stones, sizeof(analysis_stones));
+                        analysis_stone_count = saved_analysis_stone_count;
+                        black_prisoners = saved_black_prisoners;
+                        white_prisoners = saved_white_prisoners;
+
+                        if (allow_move) {
+                            // Place the stone
+                            add_analysis_stone(r, f, stone_color);
+                            // Remove captured stones
+                            remove_captured_stones(stone_color, -1, -1, stone_color);
                         }
-                        add_analysis_stone(r, f, stone_color);
-                        // Remove captured stones (skip the placed stone)
-                        remove_captured_stones(-1, r, f, stone_color);
                         if (forced_color == -1) {
                             // Only alternate if not forcing a specific color
                             analysis_turn_is_black = !analysis_turn_is_black;
