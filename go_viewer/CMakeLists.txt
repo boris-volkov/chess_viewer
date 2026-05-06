@@ -14,7 +14,7 @@ set(SOURCES go_viewer.c)
 add_executable(go_viewer ${SOURCES})
 
 # Link libraries
-target_link_libraries(go_viewer ${SDL2_LIBRARIES} m)
+target_link_libraries(go_viewer ${SDL2_LIBRARIES})
 
 # Compiler flags
 if(MSVC)

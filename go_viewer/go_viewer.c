@@ -141,6 +141,15 @@ int analysis_saved_white_prisoners = 0;
 int liberty_r[BOARD_SIZE * BOARD_SIZE];
 int liberty_f[BOARD_SIZE * BOARD_SIZE];
 int liberty_count = 0;
+int liberty_display_r = -1;
+int liberty_display_f = -1;
+int selected_group_stones[BOARD_SIZE * BOARD_SIZE][2]; // r,f pairs
+int selected_group_count = 0;
+
+// Forward declarations
+void calculate_chain_liberties(int r, int f);
+void store_selected_group(int r, int f);
+int is_stone_in_selected_group(int r, int f);
 
 int adjust_move_delay(int delta_ms, Uint32 now);
 void board_to_screen(const BoardView *view, int board_r, int board_f, int *out_x, int *out_y);
@@ -152,6 +161,17 @@ int load_sgf_game(const char *path, char moves[][MOVE_TEXT_LEN], int max_moves,
 void render_board(const BoardView *view, const Overlay *overlay);
 void render_chain_connections(const BoardView *view);
 void render_liberties(const BoardView *view) {
+    if (selected_group_count == 0) return;
+
+    // Recalculate liberties for the selected group
+    liberty_count = 0;
+    if (selected_group_count > 0) {
+        // Use the first stone in the group to calculate liberties
+        int r = selected_group_stones[0][0];
+        int f = selected_group_stones[0][1];
+        calculate_chain_liberties(r, f);
+    }
+
     if (liberty_count == 0) return;
 
     SDL_SetRenderDrawColor(renderer, 255, 0, 0, 255); // Red color for liberty dots
@@ -284,6 +304,34 @@ void calculate_chain_liberties(int r, int f) {
     // Find liberties for the chain
     int visited[BOARD_SIZE][BOARD_SIZE] = {0};
     get_liberties(r, f, color, visited);
+}
+
+void store_selected_group(int r, int f) {
+    // Get the color of the clicked stone
+    int color = (board[r][f] == 1) ? 1 : 0;
+
+    // Find the group
+    int visited[BOARD_SIZE][BOARD_SIZE] = {0};
+    int group_r[BOARD_SIZE * BOARD_SIZE];
+    int group_f[BOARD_SIZE * BOARD_SIZE];
+    int group_count = 0;
+    get_group(r, f, color, visited, &group_count, group_r, group_f);
+
+    // Store the group stones
+    selected_group_count = group_count;
+    for (int i = 0; i < group_count; i++) {
+        selected_group_stones[i][0] = group_r[i];
+        selected_group_stones[i][1] = group_f[i];
+    }
+}
+
+int is_stone_in_selected_group(int r, int f) {
+    for (int i = 0; i < selected_group_count; i++) {
+        if (selected_group_stones[i][0] == r && selected_group_stones[i][1] == f) {
+            return 1;
+        }
+    }
+    return 0;
 }
 
 // Go rules implementation for analysis mode
@@ -651,10 +699,11 @@ void render_help_overlay(const BoardView *view) {
         "  A: TOGGLE ANALYSIS",
         "  U: TOGGLE CHAIN MODE",
         "  G: TOGGLE GUESS MODE",
-        "PAUSED (SPACE):",
+        "PLAYBACK:",
         "  LEFT/RIGHT: STEP MOVES",
+        "  LEFT CLICK STONE: TOGGLE LIBERTIES",
         "ANALYSIS (A):",
-        "  LEFT CLICK STONE: SHOW LIBERTIES",
+        "  LEFT CLICK STONE: TOGGLE LIBERTIES",
         "  LEFT CLICK EMPTY: PLACE STONE",
         "  HOLD B: FORCE BLACK STONES",
         "  HOLD W: FORCE WHITE STONES",
@@ -1815,13 +1864,14 @@ int play_game(char moves[][MOVE_TEXT_LEN], int move_count, const char *result) {
                         last_move_tick = SDL_GetTicks();
                         draw_board();
                     }
-                } else if (!analysis_mode && !guess_mode && paused && key == SDLK_LEFT) {
+                } else if (!analysis_mode && !guess_mode && key == SDLK_LEFT) {
                     if (index > 0) {
+                        paused = 1; // Pause when stepping back
                         index--;
                         restore_board_state(index);
                         draw_board();
                     }
-                } else if (!analysis_mode && !guess_mode && paused && key == SDLK_RIGHT) {
+                } else if (!analysis_mode && !guess_mode && key == SDLK_RIGHT) {
                     if (index < move_count) {
                         int r, f;
                         if (parse_sgf_move(&moves[index][0], &r, &f)) {
@@ -1841,8 +1891,16 @@ int play_game(char moves[][MOVE_TEXT_LEN], int move_count, const char *result) {
                 int f = -1;
                 if (screen_to_board(&view, e.button.x, e.button.y, &r, &f)) {
                     if (board[r][f] != 0) {
-                        // Click on existing stone - show liberties of the chain
-                        calculate_chain_liberties(r, f);
+                        // Click on existing stone - toggle liberties of the chain
+                        if (is_stone_in_selected_group(r, f)) {
+                            // Toggle off - clicked on a stone in the selected group
+                            selected_group_count = 0;
+                            liberty_count = 0;
+                        } else {
+                            // Show liberties of new group
+                            store_selected_group(r, f);
+                            calculate_chain_liberties(r, f);
+                        }
                     } else {
                         // Check keyboard state for forced stone color
                         const Uint8 *keystate = SDL_GetKeyboardState(NULL);
@@ -1873,6 +1931,8 @@ int play_game(char moves[][MOVE_TEXT_LEN], int move_count, const char *result) {
                         }
                         // Clear liberty display when placing a new stone
                         liberty_count = 0;
+                        liberty_display_r = -1;
+                        liberty_display_f = -1;
                     }
                 }
             } else if (analysis_mode && e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_RIGHT) {
@@ -1906,6 +1966,30 @@ int play_game(char moves[][MOVE_TEXT_LEN], int move_count, const char *result) {
                                 break;
                             }
                         }
+                        // Clear liberty display when removing a stone
+                        liberty_count = 0;
+                        liberty_display_r = -1;
+                        liberty_display_f = -1;
+                    }
+                }
+            } else if (!analysis_mode && !guess_mode && e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) {
+                BoardView view;
+                get_board_view(&view);
+                int r = -1;
+                int f = -1;
+                if (screen_to_board(&view, e.button.x, e.button.y, &r, &f)) {
+                    if (board[r][f] != 0) {
+                        // Click on existing stone - toggle liberties of the chain
+                        if (is_stone_in_selected_group(r, f)) {
+                            // Toggle off - clicked on a stone in the selected group
+                            selected_group_count = 0;
+                            liberty_count = 0;
+                        } else {
+                            // Show liberties of new group
+                            store_selected_group(r, f);
+                            calculate_chain_liberties(r, f);
+                        }
+                        draw_board();
                     }
                 }
             } else if (guess_mode && !analysis_mode && e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) {
