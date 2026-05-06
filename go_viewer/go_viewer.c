@@ -83,6 +83,8 @@ int catalog_scroll = 0;
 char *forced_sgf_path = NULL;
 char catalog_base_dir[1024] = "";
 char catalog_dir[1024] = "";
+char sequential_dir[1024] = "";
+int sequential_index = 0;
 int suppress_present = 0;
 int cursor_visible = 1;
 Uint32 last_mouse_activity = 0;
@@ -986,8 +988,17 @@ void catalog_select(const char *games_dir) {
         char *dir_path = NULL;
         if (catalog_dir[0] == '\0') {
             dir_path = copy_string(games_dir);
+            // Reset sequential mode when selecting from root
+            sequential_dir[0] = '\0';
+            sequential_index = 0;
         } else {
             dir_path = join_path(games_dir, catalog_dir);
+            // Set sequential mode when selecting from a subdirectory
+            if (dir_path) {
+                strncpy(sequential_dir, dir_path, sizeof(sequential_dir) - 1);
+                sequential_dir[sizeof(sequential_dir) - 1] = '\0';
+                sequential_index = 0;
+            }
         }
         if (dir_path) {
             char *path = join_path(dir_path, entry->name);
@@ -2301,13 +2312,38 @@ int main(int argc, char *argv[]) {
     int quit = 0;
     while (!quit) {
         char **files = NULL;
-        int file_count = list_sgf_files(games_dir_root, &files);
+        int file_count;
+        const char *selected_dir;
+        int file_index;
+
+        if (sequential_dir[0] != '\0') {
+            // Sequential mode: play games from the selected directory
+            file_count = list_sgf_files(sequential_dir, &files);
+            selected_dir = sequential_dir;
+            if (file_count <= 0) {
+                // No files in sequential directory, fall back to random
+                sequential_dir[0] = '\0';
+                sequential_index = 0;
+                file_count = list_sgf_files(games_dir_root, &files);
+                selected_dir = games_dir_root;
+                file_index = rand() % file_count;
+            } else {
+                file_index = sequential_index % file_count;
+                sequential_index++;
+            }
+        } else {
+            // Random mode: play random games from entire games directory
+            file_count = list_sgf_files(games_dir_root, &files);
+            selected_dir = games_dir_root;
+            file_index = rand() % file_count;
+        }
+
         if (file_count <= 0) {
-            printf("No SGF files found in %s\n", games_dir_root);
+            printf("No SGF files found in %s\n", selected_dir);
             break;
         }
-        int file_index = rand() % file_count;
-        char *path = join_path(games_dir_root, files[file_index]);
+
+        char *path = join_path(selected_dir, files[file_index]);
         free_string_list(files, file_count);
         if (!path) {
             printf("Failed to create path\n");
