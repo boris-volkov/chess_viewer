@@ -1616,6 +1616,7 @@ int load_sgf_game(const char *path, char moves[][MOVE_TEXT_LEN], int max_moves,
         }
 
         // Parse properties (these are also in brackets, so parse from original line)
+        // Parse PB (black player)
         if (strstr(line, "PB[")) {
             char *start = strstr(line, "PB[");
             if (start) {
@@ -1628,19 +1629,38 @@ int load_sgf_game(const char *path, char moves[][MOVE_TEXT_LEN], int max_moves,
                     black_name[len] = '\0';
                 }
             }
-        } else if (strstr(line, "PW[")) {
+        }
+        // Parse PW (white player)
+        if (strstr(line, "PW[") || strstr(line, "pw[")) {
             char *start = strstr(line, "PW[");
+            if (!start) start = strstr(line, "pw[");
             if (start) {
                 start += 3;
                 char *end = strchr(start, ']');
                 if (end && white_name) {
                     size_t len = (size_t)(end - start);
                     if (len >= white_name_size) len = white_name_size - 1;
-                    memcpy(white_name, start, len);
-                    white_name[len] = '\0';
+                    if (len > 0) {  // Only set if there's actual content
+                        // Trim trailing whitespace
+                        while (len > 0 && (start[len-1] == ' ' || start[len-1] == '\t' || start[len-1] == '\r' || start[len-1] == '\n')) {
+                            len--;
+                        }
+                        // Trim leading whitespace
+                        char *trimmed_start = start;
+                        while (len > 0 && (*trimmed_start == ' ' || *trimmed_start == '\t')) {
+                            trimmed_start++;
+                            len--;
+                        }
+                        if (len > 0) {
+                            memcpy(white_name, trimmed_start, len);
+                            white_name[len] = '\0';
+                        }
+                    }
                 }
             }
-        } else if (strstr(line, "RE[")) {
+        }
+        // Parse RE (result)
+        if (strstr(line, "RE[")) {
             char *start = strstr(line, "RE[");
             if (start) {
                 start += 3;
@@ -2314,7 +2334,31 @@ int main(int argc, char *argv[]) {
             break;
         }
         if (game_nav_request == GAME_NAV_SELECT) {
-            // Handle catalog selection
+            // Handle catalog selection - load the selected game
+            if (forced_sgf_path) {
+                char moves[MAX_MOVES][MOVE_TEXT_LEN];
+                char result[RESULT_LEN];
+                int move_count = load_sgf_game(forced_sgf_path, moves, MAX_MOVES,
+                                               current_black_name, sizeof(current_black_name),
+                                               current_white_name, sizeof(current_white_name),
+                                               result, sizeof(result));
+                free(forced_sgf_path);
+                forced_sgf_path = NULL;
+
+                if (move_count > 0) {
+                    int stop = play_game(moves, move_count, result);
+                    if (stop && game_nav_request == GAME_NAV_NONE) {
+                        quit = 1;
+                        break;
+                    }
+                    if (game_nav_request == GAME_NAV_SELECT) {
+                        // Another catalog selection - continue the loop
+                        continue;
+                    }
+                }
+            }
+            // If loading failed or no forced path, continue with random game
+            game_nav_request = GAME_NAV_NONE;
             continue;
         }
         // Continue with next random game
