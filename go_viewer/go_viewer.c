@@ -201,6 +201,7 @@ void render_speed_label(const BoardView *view);
 void render_help_overlay(const BoardView *view);
 void render_guess_score(const BoardView *view);
 void render_result_message(const BoardView *view);
+void render_mode_status(const BoardView *view);
 
 // Forward declarations for text functions
 int text_width_px(const char *text, int scale);
@@ -247,6 +248,33 @@ const char* format_result_message(const char *sgf_result) {
     return formatted;
 }
 
+void render_mode_status(const BoardView *view) {
+    const char *mode_text = NULL;
+
+    if (analysis_mode) {
+        mode_text = "ANALYSIS MODE";
+    } else if (guess_mode) {
+        mode_text = "GUESS MODE";
+    } else if (paused) {
+        mode_text = "PAUSED";
+    }
+
+    if (!mode_text) return;
+
+    int scale = (view->square >= 30) ? 3 : 2;
+    int margin = (view->square >= 30) ? 16 : 8;
+    int text_w = text_width_px(mode_text, scale);
+    int text_h = 7 * scale;
+
+    // Position to the left of the board, outside the board area
+    int x = view->offset_x - margin - text_w;
+    int y = view->offset_y + margin; // Top margin
+
+    // Text color - yellow like result message
+    SDL_Color text_color = {255, 255, 180, 255};
+    draw_text(x, y, scale, mode_text, text_color);
+}
+
 void render_result_message(const BoardView *view) {
     if (!game_finished || result_message[0] == '\0') return;
 
@@ -258,9 +286,16 @@ void render_result_message(const BoardView *view) {
     int text_h = 7 * scale;
     int pad = (scale >= 3) ? 4 : 3;
 
-    // Position to the right of the board, vertically centered
+    // Position to the right of the board, below mode status if present
     int x = view->offset_x + view->board_px + margin;
     int y = view->offset_y + (view->board_px - text_h) / 2; // Vertically centered
+
+    // If mode status is showing, position result message below it
+    if (analysis_mode || guess_mode || paused) {
+        int mode_scale = (view->square >= 30) ? 3 : 2;
+        int mode_text_h = 7 * mode_scale;
+        y = view->offset_y + margin + mode_text_h + margin; // Below mode status
+    }
 
     // Text
     SDL_Color text_color = {255, 255, 180, 255};
@@ -1591,6 +1626,7 @@ void render_board(const BoardView *view, const Overlay *overlay) {
     render_player_labels(view);
     render_speed_label(view);
     render_guess_score(view);
+    render_mode_status(view);
     render_result_message(view);
     render_help_overlay(view);
     render_catalog_overlay(view);
