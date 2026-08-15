@@ -1,10 +1,10 @@
 cmake_minimum_required(VERSION 3.16)
-project(chess_viewer C)
+project(chess_viewer CXX)
 
-set(CMAKE_C_STANDARD 99)
-set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-add_executable(chess_viewer chess_viewer.c)
+add_executable(chess_viewer chess_viewer.cpp)
 
 find_package(SDL2 CONFIG QUIET)
 find_package(SDL2_image CONFIG QUIET)

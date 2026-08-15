@@ -1,8 +1,12 @@
-// chess_viewer.c - A minimal PGN chess viewer using SDL2 for graphical display
+// chess_viewer.cpp - A minimal PGN chess viewer using SDL2 for graphical display
 // Displays games as an animated playback with per-move delays
 // Dependencies: SDL2 and SDL2_image (for loading PNG piece images)
-// Compile (Linux/Mac): gcc chess_viewer.c -o chess_viewer -lSDL2 -lSDL2_image
+// Compile (Linux/Mac): g++ -std=c++17 chess_viewer.cpp -o chess_viewer -lSDL2 -lSDL2_image
 // Windows: Use a setup like MinGW or Visual Studio with SDL2 libs
+//
+// Built as C++17. The body is still C-style throughout — the switch from C99
+// was a no-op migration (the file compiled as C++ unmodified) done to unlock
+// the standard library for the game index and catalog work.
 
 #include <stdio.h>
 #include <stdlib.h>

@@ -25,7 +25,7 @@ The zip already includes the required DLLs plus `games/` and `pieces/`, so no ex
 ## Build from source
 
 ### Requirements
-- C compiler (MSVC, clang, or gcc)
+- C++17 compiler (MSVC, clang, or g++)
 - CMake 3.16+
 - SDL2
 - SDL2_image
