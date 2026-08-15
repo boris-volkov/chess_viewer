@@ -37,7 +37,7 @@ if (NOT TARGET SDL2_image::SDL2_image)
     message(FATAL_ERROR "SDL2_image not found. Install SDL2_image or use vcpkg.")
 endif()
 
-target_link_libraries(chess_viewer PRIVATE SDL2::SDL2 SDL2_image::SDL2_image)
 if (TARGET SDL2::SDL2main)
     target_link_libraries(chess_viewer PRIVATE SDL2::SDL2main)
 endif()
+target_link_libraries(chess_viewer PRIVATE SDL2::SDL2 SDL2_image::SDL2_image)
