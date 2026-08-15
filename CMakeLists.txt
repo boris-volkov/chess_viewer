@@ -41,3 +41,14 @@ if (TARGET SDL2::SDL2main)
     target_link_libraries(chess_viewer PRIVATE SDL2::SDL2main)
 endif()
 target_link_libraries(chess_viewer PRIVATE SDL2::SDL2 SDL2_image::SDL2_image)
+
+# The app resolves games/pieces relative to its own executable directory
+# (see SDL_GetBasePath() in main()), so keep local builds runnable the same
+# way the packaged release zip is: stage the asset folders next to the binary.
+add_custom_command(TARGET chess_viewer POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_SOURCE_DIR}/games" "$<TARGET_FILE_DIR:chess_viewer>/games"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_SOURCE_DIR}/pieces" "$<TARGET_FILE_DIR:chess_viewer>/pieces"
+    COMMENT "Staging games/ and pieces/ next to chess_viewer"
+)

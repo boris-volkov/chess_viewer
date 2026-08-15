@@ -67,6 +67,8 @@ char current_game_year[YEAR_LEN] = "";
 char current_white_elo[NAME_LEN] = "";
 char current_black_elo[NAME_LEN] = "";
 const char *games_dir_root = DEFAULT_GAMES_DIR;
+char fen_save_path_buf[1024] = "";
+char pieces_dir_buf[1024] = "";
 int show_loser_king = 0;
 int loser_is_white = 0;
 float loser_king_angle = 180.0f;
@@ -1040,8 +1042,8 @@ SDL_Texture *get_piece_texture(char piece) {
 
     char letter = tolower(piece);
     const char *color = isupper(piece) ? "lt" : "dt";
-    char path[64];
-    snprintf(path, sizeof(path), "pieces/Chess_%c%s.png", letter, color);
+    char path[1024];
+    snprintf(path, sizeof(path), "%sChess_%c%s.png", pieces_dir_buf, letter, color);
 
     SDL_Texture *tex = IMG_LoadTexture(renderer, path);
     if (!tex) {
@@ -2079,7 +2081,7 @@ int animate_move(const Move *m, int is_white) {
                     show_defense_lines = !show_defense_lines;
                     draw_board();
                 } else if (key == SDLK_s) {
-                    save_fen_snapshot(FEN_SAVE_PATH);
+                    save_fen_snapshot(fen_save_path_buf);
                     draw_board();
                 } else if (key == SDLK_ESCAPE) {
                     show_help = !show_help;
@@ -2755,7 +2757,7 @@ int play_game(const char *move_buffer, const char *header_result) {
                     show_defense_lines = !show_defense_lines;
                     draw_board();
                 } else if (key == SDLK_s) {
-                    save_fen_snapshot(FEN_SAVE_PATH);
+                    save_fen_snapshot(fen_save_path_buf);
                     draw_board();
                 } else if (key == SDLK_ESCAPE) {
                     show_help = !show_help;
@@ -3103,7 +3105,7 @@ int play_game(const char *move_buffer, const char *header_result) {
                             show_defense_lines = !show_defense_lines;
                             draw_board();
                         } else if (key == SDLK_s) {
-                            save_fen_snapshot(FEN_SAVE_PATH);
+                            save_fen_snapshot(fen_save_path_buf);
                             draw_board();
                         } else if (key == SDLK_ESCAPE) {
                             show_help = !show_help;
@@ -3176,7 +3178,7 @@ int play_game(const char *move_buffer, const char *header_result) {
                             show_defense_lines = !show_defense_lines;
                             draw_board();
                         } else if (key == SDLK_s) {
-                            save_fen_snapshot(FEN_SAVE_PATH);
+                            save_fen_snapshot(fen_save_path_buf);
                             draw_board();
                         } else if (key == SDLK_ESCAPE) {
                             show_help = !show_help;
@@ -3263,7 +3265,7 @@ int play_game(const char *move_buffer, const char *header_result) {
                     show_defense_lines = !show_defense_lines;
                     draw_board();
                 } else if (key == SDLK_s) {
-                    save_fen_snapshot(FEN_SAVE_PATH);
+                    save_fen_snapshot(fen_save_path_buf);
                     draw_board();
                 } else if (key == SDLK_ESCAPE) {
                     show_help = !show_help;
@@ -3415,16 +3417,31 @@ int play_game(const char *move_buffer, const char *header_result) {
 }
 
 int main(int argc, char *argv[]) {
-    const char *games_dir = DEFAULT_GAMES_DIR;
     (void)argc;
     (void)argv;
-    games_dir_root = games_dir;
 
     // Initialize SDL
     if (SDL_Init(SDL_INIT_VIDEO) < 0 || !(IMG_Init(IMG_INIT_PNG) & IMG_INIT_PNG)) {
         printf("SDL init error: %s\n", SDL_GetError());
         return 1;
     }
+
+    // Resolve games/pieces/save-file paths relative to the executable's own
+    // directory (not the current working directory), so the app works the
+    // same whether it's double-clicked, shortcut-launched, or run from a
+    // terminal in any directory.
+    char app_base_path[1024] = "";
+    char *sdl_base = SDL_GetBasePath();
+    if (sdl_base) {
+        snprintf(app_base_path, sizeof(app_base_path), "%s", sdl_base);
+        SDL_free(sdl_base);
+    }
+    char games_dir_buf[1024];
+    snprintf(games_dir_buf, sizeof(games_dir_buf), "%s%s", app_base_path, DEFAULT_GAMES_DIR);
+    const char *games_dir = games_dir_buf;
+    games_dir_root = games_dir;
+    snprintf(fen_save_path_buf, sizeof(fen_save_path_buf), "%s%s", app_base_path, FEN_SAVE_PATH);
+    snprintf(pieces_dir_buf, sizeof(pieces_dir_buf), "%spieces/", app_base_path);
 
     // Enable bilinear texture filtering for smoother piece rendering
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
