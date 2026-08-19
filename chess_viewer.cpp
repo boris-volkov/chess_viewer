@@ -41,6 +41,7 @@
 #define SPEED_MESSAGE_MS 1500
 #define CURSOR_IDLE_MS 2500
 #define FEN_SAVE_PATH "saved_positions.fen"
+#define SETTINGS_PATH "settings.txt"
 #define FEN_MESSAGE_MS 1500
 #define GAME_NAV_PREV -1
 #define GAME_NAV_NONE 0
@@ -73,6 +74,7 @@ char current_black_elo[NAME_LEN] = "";
 const char *games_dir_root = DEFAULT_GAMES_DIR;
 char fen_save_path_buf[1024] = "";
 char pieces_dir_buf[1024] = "";
+char settings_path_buf[1024] = "";
 int show_loser_king = 0;
 int loser_is_white = 0;
 float loser_king_angle = 180.0f;
@@ -208,6 +210,9 @@ void render_defense_lines(const BoardView *view);
 void reset_castling_state(void);
 void build_fen(char *out, size_t out_size);
 void save_fen_snapshot(const char *path);
+void resolve_app_paths(const char *base, char *games_dir_out, size_t games_dir_size);
+void load_settings(void);
+void save_settings(void);
 
 static int is_white_piece(char piece) {
     return (piece >= 'A' && piece <= 'Z');
@@ -1308,6 +1313,69 @@ void save_fen_snapshot(const char *path) {
     fen_message_until = SDL_GetTicks() + FEN_MESSAGE_MS;
 }
 
+// Point every file the program reads or writes at `base` — the executable's own
+// directory, so none of them depend on the working directory the app was
+// launched from. Split out of main() so the wiring is reachable from a test:
+// the app is fullscreen and cannot be driven by synthetic keystrokes, which
+// makes this the only part of the settings path that is otherwise unverifiable.
+void resolve_app_paths(const char *base, char *games_dir_out, size_t games_dir_size) {
+    if (!base) base = "";
+    if (games_dir_out && games_dir_size > 0)
+        snprintf(games_dir_out, games_dir_size, "%s%s", base, DEFAULT_GAMES_DIR);
+    snprintf(fen_save_path_buf, sizeof(fen_save_path_buf), "%s%s", base, FEN_SAVE_PATH);
+    snprintf(pieces_dir_buf,    sizeof(pieces_dir_buf),    "%spieces/", base);
+    snprintf(settings_path_buf, sizeof(settings_path_buf), "%s%s", base, SETTINGS_PATH);
+}
+
+// ── Persisted settings ───────────────────────────────────────────────────────
+// Plain "key value" lines, one per setting. Order-independent and tolerant in
+// both directions: unknown keys are ignored on load, so an older build can read
+// a file written by a newer one, and a key that is absent simply keeps its
+// compiled-in default, so a newer build can read an older file.
+//
+// Only display preferences live here. Modes (analysis, guess) are deliberately
+// left out — they are per-game state, and starting the program already inside
+// guess mode because that is how the last session ended would be a surprise
+// rather than a convenience.
+//
+// Written on change rather than at exit: this is a fullscreen program that gets
+// killed as often as it is quit politely, and an exit path that never runs is a
+// setting silently lost.
+
+void load_settings(void) {
+    if (!settings_path_buf[0]) return;
+    FILE *f = fopen(settings_path_buf, "r");
+    if (!f) return;                      // absent on first run — defaults stand
+    char key[64];
+    int val = 0;
+    while (fscanf(f, "%63s %d", key, &val) == 2) {
+        if      (strcmp(key, "show_elos")          == 0) show_elos          = (val != 0);
+        else if (strcmp(key, "uncolored_mode")     == 0) uncolored_mode     = (val != 0);
+        else if (strcmp(key, "show_defense_lines") == 0) show_defense_lines = (val != 0);
+        else if (strcmp(key, "view_from_white")    == 0) view_from_white    = (val != 0);
+        else if (strcmp(key, "move_delay_ms")      == 0) {
+            // Clamped, not trusted: a hand-edited or truncated file must not be
+            // able to wedge playback at zero or a value nothing can step back from.
+            if (val < MOVE_DELAY_MIN_MS) val = MOVE_DELAY_MIN_MS;
+            if (val > MOVE_DELAY_MAX_MS) val = MOVE_DELAY_MAX_MS;
+            move_delay_ms = val;
+        }
+    }
+    fclose(f);
+}
+
+void save_settings(void) {
+    if (!settings_path_buf[0]) return;
+    FILE *f = fopen(settings_path_buf, "w");
+    if (!f) return;                      // read-only install dir — not worth a fuss
+    fprintf(f, "show_elos %d\n",          show_elos          ? 1 : 0);
+    fprintf(f, "uncolored_mode %d\n",     uncolored_mode     ? 1 : 0);
+    fprintf(f, "show_defense_lines %d\n", show_defense_lines ? 1 : 0);
+    fprintf(f, "view_from_white %d\n",    view_from_white    ? 1 : 0);
+    fprintf(f, "move_delay_ms %d\n",      move_delay_ms);
+    fclose(f);
+}
+
 SDL_Texture *get_piece_texture(char piece) {
     if (piece == '.') return NULL;
     unsigned char idx = (unsigned char)piece;
@@ -2300,11 +2368,13 @@ static int handle_common_key(SDL_Keycode key) {
         return KEY_HANDLED;
     }
 
-    case SDLK_e: show_elos          = !show_elos;          draw_board(); return KEY_HANDLED;
-    case SDLK_u: uncolored_mode     = !uncolored_mode;     draw_board(); return KEY_HANDLED;
-    case SDLK_d: show_defense_lines = !show_defense_lines; draw_board(); return KEY_HANDLED;
-    case SDLK_f: view_from_white    = !view_from_white;    draw_board(); return KEY_HANDLED;
-    case SDLK_h: show_help          = !show_help;          draw_board(); return KEY_HANDLED;
+    // The four display toggles and the speed are persisted; show_help is not,
+    // since starting up with the help overlay already open would be a nuisance.
+    case SDLK_e: show_elos          = !show_elos;          save_settings(); draw_board(); return KEY_HANDLED;
+    case SDLK_u: uncolored_mode     = !uncolored_mode;     save_settings(); draw_board(); return KEY_HANDLED;
+    case SDLK_d: show_defense_lines = !show_defense_lines; save_settings(); draw_board(); return KEY_HANDLED;
+    case SDLK_f: view_from_white    = !view_from_white;    save_settings(); draw_board(); return KEY_HANDLED;
+    case SDLK_h: show_help          = !show_help;                          draw_board(); return KEY_HANDLED;
 
     case SDLK_s: save_fen_snapshot(fen_save_path_buf); draw_board(); return KEY_HANDLED;
     case SDLK_ESCAPE: menu_open(); draw_board(); return KEY_HANDLED;
@@ -2312,7 +2382,10 @@ static int handle_common_key(SDL_Keycode key) {
     case SDLK_UP:
     case SDLK_DOWN: {
         int delta = (key == SDLK_UP) ? MOVE_DELAY_STEP_MS : -MOVE_DELAY_STEP_MS;
-        if (adjust_move_delay(delta, SDL_GetTicks())) draw_board();
+        if (adjust_move_delay(delta, SDL_GetTicks())) {
+            save_settings();
+            draw_board();
+        }
         return KEY_HANDLED;
     }
 
@@ -2386,6 +2459,7 @@ int animate_move(const Move *m, int is_white) {
                     // the piece finishes its glide at the pre-flip destination. This is why
                     // F is intercepted here instead of going to handle_common_key.
                     view_from_white = !view_from_white;
+                    save_settings();
                     get_board_view(&view);
                     board_to_screen(&view, m->from_r, m->from_f, &start_x, &start_y);
                     board_to_screen(&view, m->to_r, m->to_f, &end_x, &end_y);
@@ -3043,6 +3117,7 @@ int play_game(const char *move_buffer, const char *header_result) {
                         if (!paused && move_delay_ms > prev) {
                             last_move_tick = now;
                         }
+                        save_settings();
                         draw_board();
                     }
                 } else if (key == SDLK_a) {
@@ -3624,11 +3699,13 @@ int main(int argc, char *argv[]) {
         SDL_free(sdl_base);
     }
     char games_dir_buf[1024];
-    snprintf(games_dir_buf, sizeof(games_dir_buf), "%s%s", app_base_path, DEFAULT_GAMES_DIR);
+    resolve_app_paths(app_base_path, games_dir_buf, sizeof(games_dir_buf));
     const char *games_dir = games_dir_buf;
     games_dir_root = games_dir;
-    snprintf(fen_save_path_buf, sizeof(fen_save_path_buf), "%s%s", app_base_path, FEN_SAVE_PATH);
-    snprintf(pieces_dir_buf, sizeof(pieces_dir_buf), "%spieces/", app_base_path);
+
+    // Before the first draw, so the opening frame already reflects the saved
+    // preferences rather than flashing defaults and correcting itself.
+    load_settings();
 
     // Enable bilinear texture filtering for smoother piece rendering
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");

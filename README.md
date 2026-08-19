@@ -70,6 +70,14 @@ cmake -S . -B build
 cmake --build build
 ```
 
+## Settings
+
+Display preferences — Elo display, uncoloured mode, defense lines, board
+orientation, and playback speed — are written to `settings.txt` next to the
+executable as soon as they change, and restored on the next launch. Delete the
+file to go back to defaults. Modes (analysis, guess) are deliberately not
+persisted; they are per-game state.
+
 ## Run
 Run from the repo root (or keep `games/` and `pieces/` next to the executable):
 - Windows (vcpkg Release): `build\\Release\\chess_viewer.exe`
@@ -79,20 +87,25 @@ The program loads a random PGN from `games/` and PNG assets from `pieces/`.
 
 ## Tests
 
-The test target is excluded from the default build, so it can never break a
-release build, and needs no reconfiguring to use:
+The test targets are excluded from the default build, so they can never break
+a release build, and need no reconfiguring to use:
 
 ```sh
-cmake --build build --target test_menu
+cmake --build build --target tests
 ctest --test-dir build --output-on-failure
 ```
 
-`tests/menu_test.cpp` covers the command menu's geometry: that every pixel of
-each menu label maps back to that label's own row, that separators and clicks
-outside the panel select nothing, and that keyboard navigation wraps and
-reaches every row. It `#include`s `chess_viewer.cpp` directly in order to reach
-that file's `static` functions, so it exercises the code that actually ships
-rather than a copy of the layout maths.
+Each test `#include`s `chess_viewer.cpp` directly in order to reach that file's
+`static` functions, so they exercise the code that actually ships rather than a
+copy of the logic.
+
+- `tests/menu_test.cpp` — command menu geometry: every pixel of each menu label
+  maps back to that label's own row, separators and clicks outside the panel
+  select nothing, and keyboard navigation wraps and reaches every row.
+- `tests/settings_test.cpp` — settings persistence: round-trip, unknown keys
+  ignored, absent keys keeping their current value, playback speed clamped to
+  its legal range, malformed files surviving intact, and paths resolving next
+  to the executable.
 
 ## Custom piece sets
 

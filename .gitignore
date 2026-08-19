@@ -64,3 +64,9 @@ dist/
 
 # VS Code
 .vscode/
+
+# Per-user runtime state, written next to the executable
+settings.txt
+
+# Test scratch files
+settings_test_scratch.txt

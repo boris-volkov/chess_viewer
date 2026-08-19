@@ -62,11 +62,21 @@ add_custom_command(TARGET chess_viewer POST_BUILD
 # needs the source directory on the include path and the same SDL libraries.
 enable_testing()
 
-add_executable(test_menu EXCLUDE_FROM_ALL tests/menu_test.cpp)
-target_include_directories(test_menu PRIVATE "${CMAKE_SOURCE_DIR}")
-# Deliberately no SDL2main here, unlike the app target: the test defines
+# Deliberately no SDL2main on these, unlike the app target: each test defines
 # SDL_MAIN_HANDLED and supplies a plain console main(), so linking SDL2main
-# would drag in a WinMain that calls an SDL_main this binary doesn't have.
-target_link_libraries(test_menu PRIVATE SDL2::SDL2 SDL2_image::SDL2_image)
+# would drag in a WinMain that calls an SDL_main these binaries don't have.
+function(add_chess_viewer_test name source)
+    add_executable(${name} EXCLUDE_FROM_ALL ${source})
+    target_include_directories(${name} PRIVATE "${CMAKE_SOURCE_DIR}")
+    target_link_libraries(${name} PRIVATE SDL2::SDL2 SDL2_image::SDL2_image)
+endfunction()
+
+add_chess_viewer_test(test_menu     tests/menu_test.cpp)
+add_chess_viewer_test(test_settings tests/settings_test.cpp)
 
 add_test(NAME menu_geometry COMMAND test_menu)
+add_test(NAME settings      COMMAND test_settings)
+
+# Convenience aggregate: `cmake --build build --target tests` builds them all,
+# which is what ctest needs before it can run anything.
+add_custom_target(tests DEPENDS test_menu test_settings)
