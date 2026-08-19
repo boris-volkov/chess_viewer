@@ -77,6 +77,23 @@ Run from the repo root (or keep `games/` and `pieces/` next to the executable):
 
 The program loads a random PGN from `games/` and PNG assets from `pieces/`.
 
+## Tests
+
+The test target is excluded from the default build, so it can never break a
+release build, and needs no reconfiguring to use:
+
+```sh
+cmake --build build --target test_menu
+ctest --test-dir build --output-on-failure
+```
+
+`tests/menu_test.cpp` covers the command menu's geometry: that every pixel of
+each menu label maps back to that label's own row, that separators and clicks
+outside the panel select nothing, and that keyboard navigation wraps and
+reaches every row. It `#include`s `chess_viewer.cpp` directly in order to reach
+that file's `static` functions, so it exercises the code that actually ships
+rather than a copy of the layout maths.
+
 ## Custom piece sets
 
 You can create custom chess piece sets by converting SVG files to PNG format.

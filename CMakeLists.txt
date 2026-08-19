@@ -52,3 +52,21 @@ add_custom_command(TARGET chess_viewer POST_BUILD
         "${CMAKE_SOURCE_DIR}/pieces" "$<TARGET_FILE_DIR:chess_viewer>/pieces"
     COMMENT "Staging games/ and pieces/ next to chess_viewer"
 )
+
+# ── Tests ────────────────────────────────────────────────────────────────────
+# EXCLUDE_FROM_ALL on purpose: the release workflow builds the default target,
+# and a test that fails to compile must never be able to break a release. Still
+# buildable on demand without reconfiguring:
+#     cmake --build build --target test_menu
+# The test #includes chess_viewer.cpp to reach its file-local statics, so it
+# needs the source directory on the include path and the same SDL libraries.
+enable_testing()
+
+add_executable(test_menu EXCLUDE_FROM_ALL tests/menu_test.cpp)
+target_include_directories(test_menu PRIVATE "${CMAKE_SOURCE_DIR}")
+# Deliberately no SDL2main here, unlike the app target: the test defines
+# SDL_MAIN_HANDLED and supplies a plain console main(), so linking SDL2main
+# would drag in a WinMain that calls an SDL_main this binary doesn't have.
+target_link_libraries(test_menu PRIVATE SDL2::SDL2 SDL2_image::SDL2_image)
+
+add_test(NAME menu_geometry COMMAND test_menu)
