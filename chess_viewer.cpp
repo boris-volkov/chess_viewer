@@ -1934,9 +1934,13 @@ void render_defense_lines(const BoardView *view) {
     SDL_Color white_arrow = {235, 235, 235, 175};
     SDL_Color black_arrow = { 35,  35,  35, 195};
 
-    int thickness = (view->square >= 70) ? 4 : (view->square >= 50 ? 3 : 2);
-    float head_max = (float)view->square * 0.22f;
-    if (head_max < 7.0f) head_max = 7.0f;
+    // Weight sits in the shaft rather than the head: a big head is what made a
+    // crowded board look cluttered, since every arrow ended in a broad triangle
+    // competing with the pieces. A thicker line with a smaller point still reads
+    // as directional but settles into the background.
+    int thickness = (view->square >= 70) ? 6 : (view->square >= 50 ? 5 : 3);
+    float head_max = (float)view->square * 0.14f;
+    if (head_max < 5.0f) head_max = 5.0f;
 
     // Pull both ends toward their square's centre so the shaft starts clear of
     // the defending piece and the head lands against the edge of the defended
@@ -2000,7 +2004,7 @@ void render_defense_lines(const BoardView *view) {
                     float head    = head_max;
                     float budget  = span * 0.6f / (float)n_heads;
                     if (head > budget) head = budget;
-                    if (head < 5.0f)   head = 5.0f;
+                    if (head < 4.0f)   head = 4.0f;
 
                     SDL_Color color = is_white ? white_arrow : black_arrow;
 
