@@ -81,6 +81,11 @@ float draw_king_angle = 90.0f;
 int view_from_white = 1;
 int dim_board = 0;
 int pause_buffered = 0;
+// A or G pressed during a piece slide. animate_move() runs its own event pump
+// and cannot reach play_game()'s mode state, so the keystroke is held here and
+// replayed once the animation returns -- the same trick pause_buffered already
+// used for SPACE. SDLK_UNKNOWN = nothing pending.
+SDL_Keycode mode_toggle_buffered = SDLK_UNKNOWN;
 int move_delay_ms = MOVE_DELAY_MS;
 Uint32 speed_message_until = 0;
 Uint32 fen_message_until = 0;
@@ -177,6 +182,7 @@ void render_guess_score(const BoardView *view);
 void render_catalog_overlay(const BoardView *view);
 void render_menu_overlay(const BoardView *view);
 void menu_open(void);
+void push_key_event(SDL_Keycode key);
 void menu_close(void);
 int handle_menu_event(const SDL_Event *e);
 void catalog_free(void);
@@ -972,11 +978,11 @@ void menu_close(void) {
 // Close first, then queue the keystroke: the handler that picks it up may open
 // the catalog or tear down the game loop, and it should never come back to a
 // menu still sitting on screen.
-static void menu_activate(int idx) {
-    if (idx < 0 || idx >= MENU_ITEM_COUNT) return;
-    SDL_Keycode key = menu_items[idx].key;
+// Queue a keystroke as if it had been typed. Lets a caller reuse whichever
+// handler owns that key in the loop that is currently running, rather than
+// reaching into state it cannot see from where it stands.
+void push_key_event(SDL_Keycode key) {
     if (key == SDLK_UNKNOWN) return;
-    menu_close();
     SDL_Event synth;
     SDL_zero(synth);
     synth.type = SDL_KEYDOWN;
@@ -986,6 +992,14 @@ static void menu_activate(int idx) {
     synth.key.keysym.sym = key;
     synth.key.keysym.scancode = SDL_GetScancodeFromKey(key);
     SDL_PushEvent(&synth);
+}
+
+static void menu_activate(int idx) {
+    if (idx < 0 || idx >= MENU_ITEM_COUNT) return;
+    SDL_Keycode key = menu_items[idx].key;
+    if (key == SDLK_UNKNOWN) return;
+    menu_close();
+    push_key_event(key);
 }
 
 void render_menu_overlay(const BoardView *view) {
@@ -2381,6 +2395,13 @@ int animate_move(const Move *m, int is_white) {
                     }
                 } else if (key == SDLK_SPACE) {
                     pause_buffered = 1;
+                } else if (key == SDLK_a || key == SDLK_g) {
+                    // Mode toggles need play_game()'s drag state, which is not in
+                    // scope here. Hold the key rather than dropping it: a slide is
+                    // ~450ms of every move, so ignoring it outright made A and G
+                    // look like they randomly failed. Replaying it must wait until
+                    // this pump exits, or the loop below would just re-buffer it.
+                    mode_toggle_buffered = key;
                 } else if (handle_common_key(key) == KEY_QUIT) {
                     quit = 1;
                     break;
@@ -2969,6 +2990,7 @@ int play_game(const char *move_buffer, const char *header_result) {
     show_draw_kings = 0;
     dim_board = 0;
     pause_buffered = 0;
+    mode_toggle_buffered = SDLK_UNKNOWN;
     game_nav_request = GAME_NAV_NONE;
     int analysis_dragging = 0;
     char analysis_piece = '.';
@@ -3221,6 +3243,10 @@ int play_game(const char *move_buffer, const char *header_result) {
                     quit = 1;
                     break;
                 }
+                if (mode_toggle_buffered != SDLK_UNKNOWN) {
+                    push_key_event(mode_toggle_buffered);
+                    mode_toggle_buffered = SDLK_UNKNOWN;
+                }
                 apply_move(&expected, is_white);
                 index++;
                 turn_is_white = (index % 2 == 0);
@@ -3284,6 +3310,10 @@ int play_game(const char *move_buffer, const char *header_result) {
                         dim_board = 1;
                         pause_buffered = 0;
                         last_move_tick = SDL_GetTicks();
+                    }
+                    if (mode_toggle_buffered != SDLK_UNKNOWN) {
+                        push_key_event(mode_toggle_buffered);
+                        mode_toggle_buffered = SDLK_UNKNOWN;
                     }
                     apply_move(&m, is_white);
                     draw_board();
