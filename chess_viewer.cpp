@@ -2246,6 +2246,66 @@ void apply_move(const Move *m, int is_white) {
     }
 }
 
+// ── Shared key handling ──────────────────────────────────────────────────────
+// Keys that behave the same no matter which loop is running. The program blocks
+// in a nested event pump whenever it animates or waits (piece slide, king flip,
+// draw tilt, post-game review), and each of those pumps used to carry its own
+// copy of this block — which is how G ended up reachable from exactly one of
+// them, and how a one-line fix to the FEN path turned into five edits.
+//
+// Callers hand every key here first and implement only what is genuinely their
+// own: mode toggles that touch play_game()'s local drag state, the piece-slide
+// animation's flip, and the main loop's move-timer bookkeeping. A caller that
+// needs one of these keys to behave differently intercepts it before calling.
+enum {
+    KEY_UNHANDLED = 0,   // not ours — caller should try its own handling
+    KEY_HANDLED   = 1,
+    KEY_QUIT      = 2,   // handled, and the caller should leave its loop
+};
+
+static int handle_common_key(SDL_Keycode key) {
+    switch (key) {
+    case SDLK_q: game_nav_request = GAME_NAV_NONE;    return KEY_QUIT;
+    case SDLK_n: game_nav_request = GAME_NAV_NEXT;    return KEY_QUIT;
+    case SDLK_p: game_nav_request = GAME_NAV_PREV;    return KEY_QUIT;
+    case SDLK_r: game_nav_request = GAME_NAV_RESTART; return KEY_QUIT;
+
+    case SDLK_c: {
+        // Open the catalog from the parent directory so both players/ and
+        // openings/ are visible. Three of the five pumps used to open
+        // games_dir_root directly, hiding openings/ during the end-of-game
+        // animations and the post-game review.
+        char parent_dir[1024];
+        strncpy(parent_dir, games_dir_root, sizeof(parent_dir) - 1);
+        parent_dir[sizeof(parent_dir) - 1] = '\0';
+        char *last_sep = strrchr(parent_dir, '/');
+        if (!last_sep) last_sep = strrchr(parent_dir, '\\');
+        if (last_sep) *last_sep = '\0';
+        catalog_open(parent_dir[0] ? parent_dir : ".");
+        draw_board();
+        return KEY_HANDLED;
+    }
+
+    case SDLK_e: show_elos          = !show_elos;          draw_board(); return KEY_HANDLED;
+    case SDLK_u: uncolored_mode     = !uncolored_mode;     draw_board(); return KEY_HANDLED;
+    case SDLK_d: show_defense_lines = !show_defense_lines; draw_board(); return KEY_HANDLED;
+    case SDLK_f: view_from_white    = !view_from_white;    draw_board(); return KEY_HANDLED;
+    case SDLK_h: show_help          = !show_help;          draw_board(); return KEY_HANDLED;
+
+    case SDLK_s: save_fen_snapshot(fen_save_path_buf); draw_board(); return KEY_HANDLED;
+    case SDLK_ESCAPE: menu_open(); draw_board(); return KEY_HANDLED;
+
+    case SDLK_UP:
+    case SDLK_DOWN: {
+        int delta = (key == SDLK_UP) ? MOVE_DELAY_STEP_MS : -MOVE_DELAY_STEP_MS;
+        if (adjust_move_delay(delta, SDL_GetTicks())) draw_board();
+        return KEY_HANDLED;
+    }
+
+    default: return KEY_UNHANDLED;
+    }
+}
+
 int animate_move(const Move *m, int is_white) {
     char piece = board[m->from_r][m->from_f];
     if (piece == '.') return 0;
@@ -2307,58 +2367,10 @@ int animate_move(const Move *m, int is_white) {
                 break;
             } else if (e.type == SDL_KEYDOWN) {
                 SDL_Keycode key = e.key.keysym.sym;
-                if (key == SDLK_q) {
-                    game_nav_request = GAME_NAV_NONE;
-                    quit = 1;
-                    break;
-                } else if (key == SDLK_n) {
-                    game_nav_request = GAME_NAV_NEXT;
-                    quit = 1;
-                    break;
-                } else if (key == SDLK_p) {
-                    game_nav_request = GAME_NAV_PREV;
-                    quit = 1;
-                    break;
-                } else if (key == SDLK_r) {
-                    game_nav_request = GAME_NAV_RESTART;
-                    quit = 1;
-                    break;
-                } else if (key == SDLK_c) {
-                    // Open catalog from parent directory so both players/ and openings/ are visible
-                    char parent_dir[1024];
-                    strncpy(parent_dir, games_dir_root, sizeof(parent_dir) - 1);
-                    parent_dir[sizeof(parent_dir) - 1] = '\0';
-                    char *last_sep = strrchr(parent_dir, '/');
-                    if (!last_sep) last_sep = strrchr(parent_dir, '\\');
-                    if (last_sep) {
-                        *last_sep = '\0';
-                    }
-                    catalog_open(parent_dir[0] ? parent_dir : ".");
-                    draw_board();
-                } else if (key == SDLK_e) {
-                    show_elos = !show_elos;
-                    draw_board();
-                } else if (key == SDLK_u) {
-                    uncolored_mode = !uncolored_mode;
-                    draw_board();
-                } else if (key == SDLK_d) {
-                    show_defense_lines = !show_defense_lines;
-                    draw_board();
-                } else if (key == SDLK_s) {
-                    save_fen_snapshot(fen_save_path_buf);
-                    draw_board();
-                } else if (key == SDLK_ESCAPE) {
-                    menu_open();
-                    draw_board();
-                } else if (key == SDLK_h) {
-                    show_help = !show_help;
-                } else if (key == SDLK_SPACE) {
-                    pause_buffered = 1;
-                } else if (key == SDLK_UP || key == SDLK_DOWN) {
-                    Uint32 now = SDL_GetTicks();
-                    int delta = (key == SDLK_UP) ? MOVE_DELAY_STEP_MS : -MOVE_DELAY_STEP_MS;
-                    adjust_move_delay(delta, now);
-                } else if (key == SDLK_f) {
+                if (key == SDLK_f) {
+                    // Flipping mid-slide has to move the interpolation endpoints too, or
+                    // the piece finishes its glide at the pre-flip destination. This is why
+                    // F is intercepted here instead of going to handle_common_key.
                     view_from_white = !view_from_white;
                     get_board_view(&view);
                     board_to_screen(&view, m->from_r, m->from_f, &start_x, &start_y);
@@ -2367,6 +2379,11 @@ int animate_move(const Move *m, int is_white) {
                         board_to_screen(&view, rook_r, rook_from_f, &rook_start_x, &rook_start_y);
                         board_to_screen(&view, rook_r, rook_to_f, &rook_end_x, &rook_end_y);
                     }
+                } else if (key == SDLK_SPACE) {
+                    pause_buffered = 1;
+                } else if (handle_common_key(key) == KEY_QUIT) {
+                    quit = 1;
+                    break;
                 }
             } else if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_MIDDLE) {
                 clear_analysis_marks();
@@ -2994,49 +3011,9 @@ int play_game(const char *move_buffer, const char *header_result) {
                 quit = 1;
             } else if (e.type == SDL_KEYDOWN) {
                 SDL_Keycode key = e.key.keysym.sym;
-                if (key == SDLK_q) {
-                    game_nav_request = GAME_NAV_NONE;
-                    quit = 1;
-                } else if (key == SDLK_n) {
-                    game_nav_request = GAME_NAV_NEXT;
-                    quit = 1;
-                } else if (key == SDLK_p) {
-                    game_nav_request = GAME_NAV_PREV;
-                    quit = 1;
-                } else if (key == SDLK_r) {
-                    game_nav_request = GAME_NAV_RESTART;
-                    quit = 1;
-                } else if (key == SDLK_c) {
-                    // Open catalog from parent directory so both players/ and openings/ are visible
-                    char parent_dir[1024];
-                    strncpy(parent_dir, games_dir_root, sizeof(parent_dir) - 1);
-                    parent_dir[sizeof(parent_dir) - 1] = '\0';
-                    char *last_sep = strrchr(parent_dir, '/');
-                    if (!last_sep) last_sep = strrchr(parent_dir, '\\');
-                    if (last_sep) {
-                        *last_sep = '\0';
-                    }
-                    catalog_open(parent_dir[0] ? parent_dir : ".");
-                    draw_board();
-                } else if (key == SDLK_e) {
-                    show_elos = !show_elos;
-                    draw_board();
-                } else if (key == SDLK_u) {
-                    uncolored_mode = !uncolored_mode;
-                    draw_board();
-                } else if (key == SDLK_d) {
-                    show_defense_lines = !show_defense_lines;
-                    draw_board();
-                } else if (key == SDLK_s) {
-                    save_fen_snapshot(fen_save_path_buf);
-                    draw_board();
-                } else if (key == SDLK_ESCAPE) {
-                    menu_open();
-                    draw_board();
-                } else if (key == SDLK_h) {
-                    show_help = !show_help;
-                    draw_board();
-                } else if (key == SDLK_UP || key == SDLK_DOWN) {
+                if (key == SDLK_UP || key == SDLK_DOWN) {
+                    // Main playback only: raising the delay while running must also push
+                    // last_move_tick, or the pending move fires the instant it is raised.
                     Uint32 now = SDL_GetTicks();
                     int prev = move_delay_ms;
                     int delta = (key == SDLK_UP) ? MOVE_DELAY_STEP_MS : -MOVE_DELAY_STEP_MS;
@@ -3088,9 +3065,6 @@ int play_game(const char *move_buffer, const char *header_result) {
                         last_move_tick = SDL_GetTicks();
                         draw_board();
                     }
-                } else if (key == SDLK_f) {
-                    view_from_white = !view_from_white;
-                    draw_board();
                 } else if (!analysis_mode && !guess_mode && paused && key == SDLK_LEFT) {
                     if (index > 0) {
                         index--;
@@ -3101,6 +3075,8 @@ int play_game(const char *move_buffer, const char *header_result) {
                         index++;
                         replay_moves_to_index(moves, move_count, index);
                     }
+                } else if (handle_common_key(key) == KEY_QUIT) {
+                    quit = 1;
                 }
             } else if (analysis_mode && e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) {
                 BoardView view;
@@ -3358,45 +3334,8 @@ int play_game(const char *move_buffer, const char *header_result) {
                         quit = 1;
                     } else if (e.type == SDL_KEYDOWN) {
                         SDL_Keycode key = e.key.keysym.sym;
-                        if (key == SDLK_q) {
-                            game_nav_request = GAME_NAV_NONE;
+                        if (handle_common_key(key) == KEY_QUIT) {
                             quit = 1;
-                        } else if (key == SDLK_n) {
-                            game_nav_request = GAME_NAV_NEXT;
-                            quit = 1;
-                        } else if (key == SDLK_p) {
-                            game_nav_request = GAME_NAV_PREV;
-                            quit = 1;
-                        } else if (key == SDLK_r) {
-                            game_nav_request = GAME_NAV_RESTART;
-                            quit = 1;
-                        } else if (key == SDLK_c) {
-                            catalog_open(games_dir_root);
-                            draw_board();
-                        } else if (key == SDLK_e) {
-                            show_elos = !show_elos;
-                            draw_board();
-                        } else if (key == SDLK_u) {
-                            uncolored_mode = !uncolored_mode;
-                            draw_board();
-                        } else if (key == SDLK_d) {
-                            show_defense_lines = !show_defense_lines;
-                            draw_board();
-                        } else if (key == SDLK_s) {
-                            save_fen_snapshot(fen_save_path_buf);
-                            draw_board();
-                        } else if (key == SDLK_ESCAPE) {
-                            menu_open();
-                            draw_board();
-                        } else if (key == SDLK_h) {
-                            show_help = !show_help;
-                        } else if (key == SDLK_UP || key == SDLK_DOWN) {
-                            Uint32 tick_now = SDL_GetTicks();
-                            int delta = (key == SDLK_UP) ? MOVE_DELAY_STEP_MS : -MOVE_DELAY_STEP_MS;
-                            adjust_move_delay(delta, tick_now);
-                        } else if (key == SDLK_f) {
-                            view_from_white = !view_from_white;
-                            draw_board();
                         }
                     } else if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_MIDDLE) {
                         clear_analysis_marks();
@@ -3438,45 +3377,8 @@ int play_game(const char *move_buffer, const char *header_result) {
                         quit = 1;
                     } else if (e.type == SDL_KEYDOWN) {
                         SDL_Keycode key = e.key.keysym.sym;
-                        if (key == SDLK_q) {
-                            game_nav_request = GAME_NAV_NONE;
+                        if (handle_common_key(key) == KEY_QUIT) {
                             quit = 1;
-                        } else if (key == SDLK_n) {
-                            game_nav_request = GAME_NAV_NEXT;
-                            quit = 1;
-                        } else if (key == SDLK_p) {
-                            game_nav_request = GAME_NAV_PREV;
-                            quit = 1;
-                        } else if (key == SDLK_r) {
-                            game_nav_request = GAME_NAV_RESTART;
-                            quit = 1;
-                        } else if (key == SDLK_c) {
-                            catalog_open(games_dir_root);
-                            draw_board();
-                        } else if (key == SDLK_e) {
-                            show_elos = !show_elos;
-                            draw_board();
-                        } else if (key == SDLK_u) {
-                            uncolored_mode = !uncolored_mode;
-                            draw_board();
-                        } else if (key == SDLK_d) {
-                            show_defense_lines = !show_defense_lines;
-                            draw_board();
-                        } else if (key == SDLK_s) {
-                            save_fen_snapshot(fen_save_path_buf);
-                            draw_board();
-                        } else if (key == SDLK_ESCAPE) {
-                            menu_open();
-                            draw_board();
-                        } else if (key == SDLK_h) {
-                            show_help = !show_help;
-                        } else if (key == SDLK_UP || key == SDLK_DOWN) {
-                            Uint32 tick_now = SDL_GetTicks();
-                            int delta = (key == SDLK_UP) ? MOVE_DELAY_STEP_MS : -MOVE_DELAY_STEP_MS;
-                            adjust_move_delay(delta, tick_now);
-                        } else if (key == SDLK_f) {
-                            view_from_white = !view_from_white;
-                            draw_board();
                         }
                     } else if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_MIDDLE) {
                         clear_analysis_marks();
@@ -3532,46 +3434,7 @@ int play_game(const char *move_buffer, const char *header_result) {
                 quit = 1;
             } else if (e.type == SDL_KEYDOWN) {
                 SDL_Keycode key = e.key.keysym.sym;
-                if (key == SDLK_q) {
-                    game_nav_request = GAME_NAV_NONE;
-                    quit = 1;
-                } else if (key == SDLK_n) {
-                    game_nav_request = GAME_NAV_NEXT;
-                    quit = 1;
-                } else if (key == SDLK_p) {
-                    game_nav_request = GAME_NAV_PREV;
-                    quit = 1;
-                } else if (key == SDLK_r) {
-                    game_nav_request = GAME_NAV_RESTART;
-                    quit = 1;
-                } else if (key == SDLK_c) {
-                    catalog_open(games_dir_root);
-                    draw_board();
-                } else if (key == SDLK_e) {
-                    show_elos = !show_elos;
-                    draw_board();
-                } else if (key == SDLK_u) {
-                    uncolored_mode = !uncolored_mode;
-                    draw_board();
-                } else if (key == SDLK_d) {
-                    show_defense_lines = !show_defense_lines;
-                    draw_board();
-                } else if (key == SDLK_s) {
-                    save_fen_snapshot(fen_save_path_buf);
-                    draw_board();
-                } else if (key == SDLK_ESCAPE) {
-                    menu_open();
-                    draw_board();
-                } else if (key == SDLK_h) {
-                    show_help = !show_help;
-                    draw_board();
-                } else if (key == SDLK_UP || key == SDLK_DOWN) {
-                    Uint32 tick_now = SDL_GetTicks();
-                    int delta = (key == SDLK_UP) ? MOVE_DELAY_STEP_MS : -MOVE_DELAY_STEP_MS;
-                    if (adjust_move_delay(delta, tick_now)) {
-                        draw_board();
-                    }
-                } else if (key == SDLK_a) {
+                if (key == SDLK_a) {
                     if (analysis_mode) {
                         exit_analysis_mode();
                         analysis_dragging = 0;
@@ -3599,9 +3462,6 @@ int play_game(const char *move_buffer, const char *header_result) {
                         dim_board = 0;
                         draw_board();
                     }
-                } else if (key == SDLK_f) {
-                    view_from_white = !view_from_white;
-                    draw_board();
                 } else if (!analysis_mode && key == SDLK_LEFT) {
                     if (review_index > 0) {
                         review_index--;
@@ -3616,6 +3476,8 @@ int play_game(const char *move_buffer, const char *header_result) {
                         show_draw_kings = 0;
                         replay_moves_to_index(moves, move_count, review_index);
                     }
+                } else if (handle_common_key(key) == KEY_QUIT) {
+                    quit = 1;
                 }
             } else if (analysis_mode && e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) {
                 BoardView view;
