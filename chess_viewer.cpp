@@ -125,6 +125,22 @@ int cursor_visible = 1;
 Uint32 last_mouse_activity = 0;
 char fen_message[64] = "FEN saved";
 
+// ── Command menu (ESC) ───────────────────────────────────────────────────────
+// A row does its work by pushing the same keystroke its shortcut would produce,
+// rather than calling the action directly. The mode handlers for A and G live
+// inside play_game() and close over local drag state (analysis_dragging,
+// guess_pending, ...) that isn't reachable from here — synthesizing the key lets
+// every row reuse the handler that already exists, in whichever loop is running,
+// instead of growing a second copy of the mode logic that could drift from it.
+typedef struct {
+    const char *label;
+    SDL_Keycode key;      // SDLK_UNKNOWN = separator row (blank, unselectable)
+    const int  *toggle;   // non-NULL: row shows this flag's state as [ON]/[OFF]
+} MenuItem;
+
+int menu_active = 0;
+int menu_index = 0;
+
 typedef struct {
     int square;
     int offset_x;
@@ -143,6 +159,7 @@ typedef struct {
 } Overlay;
 
 int is_in_check(int is_white);
+void get_board_view(BoardView *view);
 void board_to_screen(const BoardView *view, int board_r, int board_f, int *out_x, int *out_y);
 int screen_to_board(const BoardView *view, int x, int y, int *out_r, int *out_f);
 void enter_analysis_mode(void);
@@ -158,6 +175,10 @@ void render_fen_label(const BoardView *view);
 void render_help_overlay(const BoardView *view);
 void render_guess_score(const BoardView *view);
 void render_catalog_overlay(const BoardView *view);
+void render_menu_overlay(const BoardView *view);
+void menu_open(void);
+void menu_close(void);
+int handle_menu_event(const SDL_Event *e);
 void catalog_free(void);
 void catalog_open(const char *games_dir);
 void catalog_select(const char *games_dir);
@@ -442,6 +463,7 @@ void render_help_overlay(const BoardView *view) {
 
     const char *lines[] = {
         "HELP",
+        "ESC OPENS THE MENU",
         "ALL MODES:",
         "  Q: QUIT",
         "  N: NEXT GAME",
@@ -452,7 +474,8 @@ void render_help_overlay(const BoardView *view) {
         "  U: TOGGLE UNCOLORED",
         "  D: TOGGLE DEFENSE",
         "  S: SAVE FEN",
-        "  ESC: TOGGLE HELP",
+        "  ESC: OPEN MENU",
+        "  H: TOGGLE HELP",
         "  F: FLIP VIEW",
         "  UP/DOWN: SPEED",
         "  RIGHT DRAG: MARK SQUARES",
@@ -832,6 +855,238 @@ void render_catalog_overlay(const BoardView *view) {
         draw_text(text_x, text_y, scale, label, text_color);
         text_y += line_h;
     }
+}
+
+// ── Command menu ─────────────────────────────────────────────────────────────
+
+static const MenuItem menu_items[] = {
+    {"ANALYSIS MODE", SDLK_a,       &analysis_mode},
+    {"GUESS MODE",    SDLK_g,       &guess_mode},
+    {"",              SDLK_UNKNOWN, NULL},
+    {"NEXT GAME",     SDLK_n,       NULL},
+    {"PREVIOUS GAME", SDLK_p,       NULL},
+    {"RESTART GAME",  SDLK_r,       NULL},
+    {"CATALOG",       SDLK_c,       NULL},
+    {"",              SDLK_UNKNOWN, NULL},
+    {"FLIP BOARD",    SDLK_f,       NULL},
+    {"SHOW ELO",      SDLK_e,       &show_elos},
+    {"UNCOLORED",     SDLK_u,       &uncolored_mode},
+    {"DEFENSE LINES", SDLK_d,       &show_defense_lines},
+    {"",              SDLK_UNKNOWN, NULL},
+    {"SAVE FEN",      SDLK_s,       NULL},
+    {"HELP",          SDLK_h,       &show_help},
+    {"QUIT",          SDLK_q,       NULL},
+};
+#define MENU_ITEM_COUNT ((int)(sizeof(menu_items) / sizeof(menu_items[0])))
+
+#define MENU_TITLE "MENU"
+#define MENU_HINT  "ENTER SELECT   ESC CLOSE"
+
+typedef struct {
+    SDL_Rect box;
+    int scale;
+    int pad;
+    int text_h;
+    int line_gap;
+    int line_h;
+    int first_row_y;
+    int row_x;
+    int row_w;
+} MenuLayout;
+
+// Geometry for both the draw and the mouse hit-test. Kept as one function on
+// purpose: the two are easy to nudge out of sync, and a menu whose clickable
+// rows sit a few pixels off from its painted rows is a miserable bug to chase.
+static void menu_layout(const BoardView *view, MenuLayout *L) {
+    L->scale    = (view->square >= 60) ? 3 : 2;
+    L->line_gap = (L->scale >= 3) ? 8 : 5;
+    L->text_h   = 7 * L->scale;
+    L->pad      = (L->scale >= 3) ? 18 : 12;
+    L->line_h   = L->text_h + L->line_gap;
+
+    // Widest row, measured with the toggle suffix so the box never reflows when
+    // a flag flips from [OFF] to [ON].
+    int max_w = text_width_px(MENU_TITLE, L->scale);
+    int hint_w = text_width_px(MENU_HINT, L->scale);
+    if (hint_w > max_w) max_w = hint_w;
+    for (int i = 0; i < MENU_ITEM_COUNT; i++) {
+        if (menu_items[i].key == SDLK_UNKNOWN) continue;
+        char label[128];
+        if (menu_items[i].toggle) {
+            snprintf(label, sizeof(label), "%s   [OFF]", menu_items[i].label);
+        } else {
+            snprintf(label, sizeof(label), "%s", menu_items[i].label);
+        }
+        int w = text_width_px(label, L->scale);
+        if (w > max_w) max_w = w;
+    }
+
+    int title_block = L->text_h + L->line_gap * 2;
+    int hint_block  = L->line_gap + L->text_h;
+    int body_h      = MENU_ITEM_COUNT * L->line_h;
+
+    L->box.w = max_w + L->pad * 2;
+    L->box.h = title_block + body_h + hint_block + L->pad * 2;
+    L->box.x = (view->screen_w - L->box.w) / 2;
+    L->box.y = (view->screen_h - L->box.h) / 2;
+
+    L->first_row_y = L->box.y + L->pad + title_block;
+    L->row_x       = L->box.x + L->pad / 2;
+    L->row_w       = L->box.w - L->pad;
+}
+
+// Next selectable row in `dir` (+1/-1), wrapping and stepping over separators.
+static int menu_step(int from, int dir) {
+    int i = from;
+    for (int guard = 0; guard < MENU_ITEM_COUNT; guard++) {
+        i = (i + dir + MENU_ITEM_COUNT) % MENU_ITEM_COUNT;
+        if (menu_items[i].key != SDLK_UNKNOWN) return i;
+    }
+    return from;
+}
+
+// Row under (x,y), or -1. Separators report -1 so clicking a gap does nothing.
+static int menu_item_at(const BoardView *view, int x, int y) {
+    MenuLayout L;
+    menu_layout(view, &L);
+    if (x < L.row_x || x >= L.row_x + L.row_w) return -1;
+    int rel = y - (L.first_row_y - L.line_gap / 2);
+    if (rel < 0) return -1;
+    int idx = rel / L.line_h;
+    if (idx < 0 || idx >= MENU_ITEM_COUNT) return -1;
+    if (menu_items[idx].key == SDLK_UNKNOWN) return -1;
+    return idx;
+}
+
+void menu_open(void) {
+    if (menu_active) return;
+    menu_active = 1;
+    menu_index = 0;
+    if (menu_items[menu_index].key == SDLK_UNKNOWN) menu_index = menu_step(menu_index, 1);
+}
+
+void menu_close(void) {
+    menu_active = 0;
+}
+
+// Close first, then queue the keystroke: the handler that picks it up may open
+// the catalog or tear down the game loop, and it should never come back to a
+// menu still sitting on screen.
+static void menu_activate(int idx) {
+    if (idx < 0 || idx >= MENU_ITEM_COUNT) return;
+    SDL_Keycode key = menu_items[idx].key;
+    if (key == SDLK_UNKNOWN) return;
+    menu_close();
+    SDL_Event synth;
+    SDL_zero(synth);
+    synth.type = SDL_KEYDOWN;
+    synth.key.type = SDL_KEYDOWN;
+    synth.key.state = SDL_PRESSED;
+    synth.key.timestamp = SDL_GetTicks();
+    synth.key.keysym.sym = key;
+    synth.key.keysym.scancode = SDL_GetScancodeFromKey(key);
+    SDL_PushEvent(&synth);
+}
+
+void render_menu_overlay(const BoardView *view) {
+    if (!menu_active) return;
+
+    MenuLayout L;
+    menu_layout(view, &L);
+
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 150);
+    SDL_Rect dim = {0, 0, view->screen_w, view->screen_h};
+    SDL_RenderFillRect(renderer, &dim);
+
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
+    SDL_SetRenderDrawColor(renderer, 35, 42, 54, 255);
+    SDL_RenderFillRect(renderer, &L.box);
+    SDL_SetRenderDrawColor(renderer, 255, 255, 180, 255);
+    SDL_RenderDrawRect(renderer, &L.box);
+
+    SDL_Color accent    = {255, 255, 180, 255};
+    SDL_Color primary   = {235, 235, 235, 255};
+    SDL_Color dim_text  = {130, 130, 130, 255};
+    SDL_Color on_text   = {120, 220, 120, 255};
+
+    int tx = L.box.x + L.pad;
+    draw_text(tx, L.box.y + L.pad, L.scale, MENU_TITLE, accent);
+
+    for (int i = 0; i < MENU_ITEM_COUNT; i++) {
+        if (menu_items[i].key == SDLK_UNKNOWN) continue;
+        int ty = L.first_row_y + i * L.line_h;
+        if (i == menu_index) {
+            SDL_Rect hi = {L.row_x, ty - L.line_gap / 2, L.row_w, L.text_h + L.line_gap};
+            SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+            SDL_SetRenderDrawColor(renderer, 40, 120, 255, 190);
+            SDL_RenderFillRect(renderer, &hi);
+            SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
+        }
+        draw_text(tx, ty, L.scale, menu_items[i].label,
+                  (i == menu_index) ? accent : primary);
+        if (menu_items[i].toggle) {
+            const char *state = *menu_items[i].toggle ? "[ON]" : "[OFF]";
+            int sw = text_width_px(state, L.scale);
+            draw_text(L.box.x + L.box.w - L.pad - sw, ty, L.scale, state,
+                      *menu_items[i].toggle ? on_text : dim_text);
+        }
+    }
+
+    draw_text(tx, L.first_row_y + MENU_ITEM_COUNT * L.line_h + L.line_gap,
+              L.scale, MENU_HINT, dim_text);
+}
+
+// Mirrors handle_catalog_event: returns 1 when the event was consumed, so the
+// five playback loops can each hand events here first with a one-line call.
+int handle_menu_event(const SDL_Event *e) {
+    if (!menu_active) return 0;
+    BoardView view;
+    get_board_view(&view);
+
+    if (e->type == SDL_KEYDOWN) {
+        SDL_Keycode key = e->key.keysym.sym;
+        if (key == SDLK_ESCAPE) {
+            menu_close();
+            return 1;
+        } else if (key == SDLK_UP) {
+            menu_index = menu_step(menu_index, -1);
+            return 1;
+        } else if (key == SDLK_DOWN) {
+            menu_index = menu_step(menu_index, 1);
+            return 1;
+        } else if (key == SDLK_RETURN || key == SDLK_KP_ENTER || key == SDLK_SPACE) {
+            menu_activate(menu_index);
+            return 1;
+        }
+        // Any other key closes the menu and is then handled normally, so the
+        // existing shortcuts keep working without having to dismiss it first.
+        menu_close();
+        return 0;
+    }
+
+    if (e->type == SDL_MOUSEMOTION) {
+        int hit = menu_item_at(&view, e->motion.x, e->motion.y);
+        if (hit >= 0) menu_index = hit;
+        return 1;
+    }
+
+    if (e->type == SDL_MOUSEBUTTONDOWN && e->button.button == SDL_BUTTON_LEFT) {
+        int hit = menu_item_at(&view, e->button.x, e->button.y);
+        if (hit >= 0) {
+            menu_activate(hit);
+        } else {
+            MenuLayout L;
+            menu_layout(&view, &L);
+            int inside = (e->button.x >= L.box.x && e->button.x < L.box.x + L.box.w &&
+                          e->button.y >= L.box.y && e->button.y < L.box.y + L.box.h);
+            if (!inside) menu_close();   // click-away dismisses; a missed row does not
+        }
+        return 1;
+    }
+
+    if (e->type == SDL_MOUSEBUTTONUP || e->type == SDL_MOUSEWHEEL) return 1;
+    return 0;
 }
 
 int handle_catalog_event(const SDL_Event *e, const char *games_dir) {
@@ -1421,6 +1676,7 @@ void render_board(const BoardView *view, const Overlay *overlay) {
     render_guess_score(view);
     render_help_overlay(view);
     render_catalog_overlay(view);
+    render_menu_overlay(view);   // last: dims and sits above the other overlays
 
     if (!suppress_present) {
         SDL_RenderPresent(renderer);
@@ -2033,6 +2289,10 @@ int animate_move(const Move *m, int is_white) {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
             note_mouse_activity_event(&e);
+            if (handle_menu_event(&e)) {
+                draw_board();
+                continue;
+            }
             if (handle_catalog_event(&e, games_dir_root)) {
                 draw_board();
                 if (game_nav_request == GAME_NAV_SELECT && catalog_selection_made) {
@@ -2088,6 +2348,9 @@ int animate_move(const Move *m, int is_white) {
                     save_fen_snapshot(fen_save_path_buf);
                     draw_board();
                 } else if (key == SDLK_ESCAPE) {
+                    menu_open();
+                    draw_board();
+                } else if (key == SDLK_h) {
                     show_help = !show_help;
                 } else if (key == SDLK_SPACE) {
                     pause_buffered = 1;
@@ -2715,6 +2978,10 @@ int play_game(const char *move_buffer, const char *header_result) {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
             note_mouse_activity_event(&e);
+            if (handle_menu_event(&e)) {
+                draw_board();
+                continue;
+            }
             if (handle_catalog_event(&e, catalog_active ? catalog_base_dir : games_dir_root)) {
                 draw_board();
         if (game_nav_request == GAME_NAV_SELECT && catalog_selection_made) {
@@ -2764,6 +3031,9 @@ int play_game(const char *move_buffer, const char *header_result) {
                     save_fen_snapshot(fen_save_path_buf);
                     draw_board();
                 } else if (key == SDLK_ESCAPE) {
+                    menu_open();
+                    draw_board();
+                } else if (key == SDLK_h) {
                     show_help = !show_help;
                     draw_board();
                 } else if (key == SDLK_UP || key == SDLK_DOWN) {
@@ -3072,6 +3342,10 @@ int play_game(const char *move_buffer, const char *header_result) {
                 SDL_Event e;
                 while (SDL_PollEvent(&e)) {
                     note_mouse_activity_event(&e);
+                    if (handle_menu_event(&e)) {
+                        draw_board();
+                        continue;
+                    }
                     if (handle_catalog_event(&e, games_dir_root)) {
                         draw_board();
                         if (game_nav_request == GAME_NAV_SELECT && catalog_selection_made) {
@@ -3112,6 +3386,9 @@ int play_game(const char *move_buffer, const char *header_result) {
                             save_fen_snapshot(fen_save_path_buf);
                             draw_board();
                         } else if (key == SDLK_ESCAPE) {
+                            menu_open();
+                            draw_board();
+                        } else if (key == SDLK_h) {
                             show_help = !show_help;
                         } else if (key == SDLK_UP || key == SDLK_DOWN) {
                             Uint32 tick_now = SDL_GetTicks();
@@ -3145,6 +3422,10 @@ int play_game(const char *move_buffer, const char *header_result) {
                 SDL_Event e;
                 while (SDL_PollEvent(&e)) {
                     note_mouse_activity_event(&e);
+                    if (handle_menu_event(&e)) {
+                        draw_board();
+                        continue;
+                    }
                     if (handle_catalog_event(&e, games_dir_root)) {
                         draw_board();
                         if (game_nav_request == GAME_NAV_SELECT && catalog_selection_made) {
@@ -3185,6 +3466,9 @@ int play_game(const char *move_buffer, const char *header_result) {
                             save_fen_snapshot(fen_save_path_buf);
                             draw_board();
                         } else if (key == SDLK_ESCAPE) {
+                            menu_open();
+                            draw_board();
+                        } else if (key == SDLK_h) {
                             show_help = !show_help;
                         } else if (key == SDLK_UP || key == SDLK_DOWN) {
                             Uint32 tick_now = SDL_GetTicks();
@@ -3232,6 +3516,10 @@ int play_game(const char *move_buffer, const char *header_result) {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
             note_mouse_activity_event(&e);
+            if (handle_menu_event(&e)) {
+                draw_board();
+                continue;
+            }
             if (handle_catalog_event(&e, games_dir_root)) {
                 draw_board();
                 if (game_nav_request == GAME_NAV_SELECT && catalog_selection_made) {
@@ -3272,6 +3560,9 @@ int play_game(const char *move_buffer, const char *header_result) {
                     save_fen_snapshot(fen_save_path_buf);
                     draw_board();
                 } else if (key == SDLK_ESCAPE) {
+                    menu_open();
+                    draw_board();
+                } else if (key == SDLK_h) {
                     show_help = !show_help;
                     draw_board();
                 } else if (key == SDLK_UP || key == SDLK_DOWN) {
