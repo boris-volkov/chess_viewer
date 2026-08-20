@@ -15,7 +15,7 @@
 
 namespace {
 
-const char  CACHE_MAGIC[8] = {'C','V','I','D','X','0','1','\0'};
+const char  CACHE_MAGIC[8] = {'C','V','I','D','X','0','2','\0'};
 const char *CACHE_NAME     = ".chess_viewer_index";
 
 #ifdef _WIN32
@@ -115,6 +115,23 @@ bool get_str(FILE *f, std::string &s) {
 
 GameIndex::~GameIndex() {
     if (thread_.joinable()) thread_.join();
+}
+
+std::string GameIndex::last_name(const std::string &full) {
+    size_t b = full.find_first_not_of(" \t");
+    if (b == std::string::npos) return std::string();
+    size_t comma = full.find(',', b);
+    if (comma != std::string::npos) {
+        size_t e = comma;
+        while (e > b && isspace((unsigned char)full[e - 1])) e--;
+        return full.substr(b, e - b);
+    }
+    // No comma: take the last whitespace-separated word.
+    size_t e = full.find_last_not_of(" \t");
+    if (e == std::string::npos) return std::string();
+    size_t sp = full.find_last_of(" \t", e);
+    size_t start = (sp == std::string::npos) ? b : sp + 1;
+    return full.substr(start, e - start + 1);
 }
 
 std::string GameIndex::index_file_path(const std::string &games_dir) {
@@ -254,8 +271,8 @@ void GameIndex::do_load(std::string games_dir) {
             std::string v;
             if (tag_value(line, "Event", v)) {
                 if (have) {
-                    cur.white_id  = pool.intern(white);
-                    cur.black_id  = pool.intern(black);
+                    cur.white_id  = pool.intern(last_name(white));
+                    cur.black_id  = pool.intern(last_name(black));
                     cur.year      = parse_year(date);
                     cur.result    = parse_result(result);
                     cur.white_elo = parse_elo(welo);
@@ -277,8 +294,8 @@ void GameIndex::do_load(std::string games_dir) {
             else if (tag_value(line, "Result", v))     { result = v; }
         }
         if (have) {
-            cur.white_id  = pool.intern(white);
-            cur.black_id  = pool.intern(black);
+            cur.white_id  = pool.intern(last_name(white));
+            cur.black_id  = pool.intern(last_name(black));
             cur.year      = parse_year(date);
             cur.result    = parse_result(result);
             cur.white_elo = parse_elo(welo);

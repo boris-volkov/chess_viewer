@@ -74,6 +74,16 @@ public:
     // Name id for an exact name, or -1.
     int find_name(const std::string &name) const;
 
+    // Surname portion of a PGN name tag: the text before the comma
+    // ("Kasparov, Garry" -> "Kasparov"), or the last word when there is no
+    // comma. Names are stored this way, which shortens rows and merges the
+    // several spellings the source files use for one player -- "Ivanchuk,V"
+    // and "Ivanchuk, Vassily" were separate entries before.
+    //
+    // This is the single definition of the rule; chess_viewer's set_last_name
+    // defers to it so the catalog and the playback caption cannot disagree.
+    static std::string last_name(const std::string &full);
+
     // Where the cache lives, for tests and for reporting.
     static std::string index_file_path(const std::string &games_dir);
 

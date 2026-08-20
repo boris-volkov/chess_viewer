@@ -83,6 +83,10 @@ a per-game index of every PGN under `games/`:
 Rows in these views are individual games, not files, so the preview boards show
 that game's opening and final position. Selecting one opens exactly that game.
 
+Players are listed by surname. The source PGNs tag the same person several
+ways — `Ivanchuk,V` and `Ivanchuk, Vassily` were separate entries — so taking
+the name before the comma both merges them and keeps rows short enough to read.
+
 The index is built in a background thread on first run (about 4.5 seconds for
 419,617 games) and cached to `games/.chess_viewer_index`, after which it loads
 in well under a second. Editing, adding or removing a PGN triggers a rebuild

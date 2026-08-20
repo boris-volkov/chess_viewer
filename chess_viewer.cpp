@@ -3382,41 +3382,13 @@ void extract_year(char *out, size_t out_size, const char *date) {
 }
 
 void set_last_name(char *out, size_t out_size, const char *full) {
+    // Delegates to GameIndex::last_name so the caption under the board and the
+    // names in the catalog cannot drift apart — they are the same rule.
     if (!out || out_size == 0) return;
-    out[0] = '\0';
+    out[0] = 0;
     if (!full) return;
-
-    const char *start = full;
-    while (isspace((unsigned char)*start)) start++;
-    if (*start == '\0') return;
-
-    const char *comma = strchr(start, ',');
-    const char *name_start = start;
-    const char *name_end = NULL;
-
-    if (comma) {
-        name_end = comma;
-        while (name_end > name_start && isspace((unsigned char)name_end[-1])) {
-            name_end--;
-        }
-    } else {
-        const char *p = start;
-        const char *last_word = start;
-        while (*p) {
-            while (isspace((unsigned char)*p)) p++;
-            if (*p == '\0') break;
-            last_word = p;
-            while (*p && !isspace((unsigned char)*p)) p++;
-        }
-        name_start = last_word;
-        name_end = name_start;
-        while (*name_end && !isspace((unsigned char)*name_end)) name_end++;
-    }
-
-    size_t len = (size_t)(name_end - name_start);
-    if (len >= out_size) len = out_size - 1;
-    memcpy(out, name_start, len);
-    out[len] = '\0';
+    std::string ln = GameIndex::last_name(full);
+    snprintf(out, out_size, "%s", ln.c_str());
 }
 
 int push_game(Game **games, int *count, int *cap, const char *move_buffer,

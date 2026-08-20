@@ -76,6 +76,52 @@ static void fresh_dir() {
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
+static void test_last_name() {
+    std::printf("[last name]\n");
+    struct { const char *in; const char *want; } cases[] = {
+        {"Kasparov, Garry",   "Kasparov"},
+        {"Carlsen,M",         "Carlsen"},
+        {"Vachier Lagrave,M", "Vachier Lagrave"},  // multi-word surname kept whole
+        {"Adams, Michael",    "Adams"},
+        {"Adams,Mi",          "Adams"},            // collapses with the line above
+        {"  Tal, Mihail  ",   "Tal"},              // leading space trimmed
+        {"Tal ,Mihail",       "Tal"},              // space before the comma trimmed
+        {"Abrahamer",         "Abrahamer"},        // no comma, single word
+        {"Asish Panda",       "Panda"},            // no comma, last word
+        {"",                  ""},
+        {"   ",               ""},
+        {",Garry",            ""},                 // nothing before the comma
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        char msg[160];
+        std::snprintf(msg, sizeof(msg), "last_name of \"%s\"", cases[i].in);
+        check_str(GameIndex::last_name(cases[i].in), cases[i].want, msg);
+    }
+}
+
+static void test_names_merge() {
+    std::printf("[name merging]\n");
+    fresh_dir();
+    // The same two players under the various spellings the real files use.
+    write_file("a.pgn",
+        game("Ivanchuk,V",        "Carlsen,M",    "2001.01.01", "1-0", "", "", "1. e4") +
+        game("Ivanchuk, Vassily", "Carlsen, M",   "2002.01.01", "0-1", "", "", "1. d4") +
+        game("Carlsen,Magnus",    "Ivanchuk,Va",  "2003.01.01", "1-0", "", "", "1. c4"));
+
+    GameIndex idx;
+    idx.load_blocking(DIR);
+    check_eq(idx.count(), 3, "three games");
+
+    auto players = idx.players_by_frequency();
+    check_eq((int)players.size(), 2, "three spellings each collapse to one player");
+
+    int iv = idx.find_name("Ivanchuk");
+    check(iv >= 0, "the surname is what gets stored");
+    check_eq((int)idx.games_of_player(iv).size(), 3, "every spelling found under one name");
+    check_eq(idx.find_name("Ivanchuk,V"), -1, "the full tag is not stored");
+    check_eq((int)idx.search("ivanchuk").size(), 3, "search matches the merged name");
+}
+
 static void test_build_and_fields() {
     std::printf("[build]\n");
     fresh_dir();
@@ -92,8 +138,8 @@ static void test_build_and_fields() {
 
     // Games are indexed in file order, files sorted by relative path.
     const IndexEntry &e0 = idx.entry(0);
-    check_str(idx.name(e0.white_id), "Kasparov, G", "white name of first game");
-    check_str(idx.name(e0.black_id), "Karpov, A",   "black name of first game");
+    check_str(idx.name(e0.white_id), "Kasparov", "white name of first game");
+    check_str(idx.name(e0.black_id), "Karpov",   "black name of first game");
     check_eq(e0.year, 1985, "year parsed");
     check_eq(e0.white_elo, 2700, "white elo parsed");
     check_eq(e0.black_elo, 2720, "black elo parsed");
@@ -111,7 +157,7 @@ static void test_build_and_fields() {
     check(e2.file_id != e0.file_id, "third game is in the other file");
 
     // Interning: a name appearing in several games is stored once.
-    check_eq(idx.find_name("Kasparov, G") == idx.entry(1).black_id ? 1 : 0, 1,
+    check_eq(idx.find_name("Kasparov") == idx.entry(1).black_id ? 1 : 0, 1,
              "repeated name shares one id");
 }
 
@@ -213,7 +259,7 @@ static void test_cache_round_trip() {
     GameIndex second;
     second.load_blocking(DIR);
     check_eq(second.count(), 1, "cache reload gives same count");
-    check_str(second.name(second.entry(0).white_id), "Kasparov, G", "cached name survives");
+    check_str(second.name(second.entry(0).white_id), "Kasparov", "cached name survives");
     check_eq(second.entry(0).year, 1985, "cached year survives");
     check_eq(second.entry(0).white_elo, 2700, "cached elo survives");
     check(second.entry(0).result == 'W', "cached result survives");
@@ -312,6 +358,8 @@ static void test_empty_dir() {
 
 int main() {
     std::printf("game index self-test\n\n");
+    test_last_name();
+    test_names_merge();
     test_build_and_fields();
     test_offsets_point_at_events();
     test_search();
