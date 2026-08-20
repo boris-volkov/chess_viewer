@@ -70,6 +70,24 @@ cmake -S . -B build
 cmake --build build
 ```
 
+## Catalog
+
+Press `C` for the catalog. Alongside the on-disk tree it offers views built from
+a per-game index of every PGN under `games/`:
+
+- **`[BY PLAYER]`** — every player in the collection, most games first, drilling
+  into that player's games across all files.
+- **`[BY YEAR]`** — the same, grouped by year.
+- **`/`** — search all games by player name or year as you type.
+
+Rows in these views are individual games, not files, so the preview boards show
+that game's opening and final position. Selecting one opens exactly that game.
+
+The index is built in a background thread on first run (about 4.5 seconds for
+419,617 games) and cached to `games/.chess_viewer_index`, after which it loads
+in well under a second. Editing, adding or removing a PGN triggers a rebuild
+automatically. Deleting the cache file is safe — it is regenerated.
+
 ## Settings
 
 Display preferences — Elo display, uncoloured mode, defense lines, board
@@ -106,6 +124,10 @@ copy of the logic.
   ignored, absent keys keeping their current value, playback speed clamped to
   its legal range, malformed files surviving intact, and paths resolving next
   to the executable.
+- `tests/index_test.cpp` — the game index: header parsing, byte offsets landing
+  on real `[Event` lines, case-insensitive search, player and year grouping,
+  cache round-trip and invalidation, corrupt caches, and concurrent access
+  during a background build.
 
 ## Custom piece sets
 
