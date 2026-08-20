@@ -158,7 +158,20 @@ CatalogEntry *catalog_entries = NULL;
 int catalog_entry_count = 0;
 int catalog_index = 0;
 int catalog_scroll = 0;
+// What plays next, and what plays after that.
+//
+// forced_* is a one-shot: the exact game the catalog just picked. It is
+// consumed by the next selection and cleared, so pressing N moves on instead
+// of replaying it.
+//
+// The scope is the pool N draws from afterwards — the player, year, file or
+// search result the pick came from. Empty means the whole collection, which
+// is how the program starts.
 char *forced_pgn_path = NULL;
+std::vector<int> playback_scope;
+// Fallback pool for a PGN that is not in the index: keep drawing from that
+// one file, which is what selecting a file did before the index existed.
+char *scope_path = NULL;
 // Byte offset of the game the catalog picked, or -1 for "any game in the file".
 long long forced_game_offset = -1;
 char catalog_base_dir[1024] = "";
@@ -571,6 +584,10 @@ void render_help_overlay(const BoardView *view) {
         "CATALOG (C):",
         "  UP/DOWN: SELECT ROW",
         "  /: SEARCH ALL GAMES",
+        "  PICK A GAME: PLAYS IT,",
+        "   THEN N CONTINUES",
+        "   RANDOMLY IN THAT LIST",
+        "  [ALL GAMES]: RESET",
         "  BY PLAYER / BY YEAR:",
         "    BROWSE EVERY GAME",
         "  ENTER: OPEN",
@@ -680,6 +697,7 @@ static int catalog_load_entries(const char *games_dir) {
     // Ways into the index, offered at the top of the tree root. They are not
     // directories on disk — they are views over all 419,617 indexed games.
     if (catalog_dir[0] == 0) {
+        push_catalog_entry_id(&entries, &count, &cap, "[ALL GAMES]", 10, -1);
         push_catalog_entry_id(&entries, &count, &cap, "[BY PLAYER]", 4, -1);
         push_catalog_entry_id(&entries, &count, &cap, "[BY YEAR]",   6, -1);
     }
@@ -818,9 +836,15 @@ static void format_game_row(int entry_id, char *out, size_t out_size) {
     }
 }
 
+// Ids of every game in the view currently listed — the full set, not the
+// capped display rows, so choosing one game from Kasparov's 2,212 leaves all
+// 2,212 as the pool to continue from.
+std::vector<int> catalog_scope_ids;
+
 static int push_games(CatalogEntry **entries, int *count, int *cap,
                       const std::vector<int> &ids) {
     catalog_result_total = (int)ids.size();
+    catalog_scope_ids = ids;
     int n = (int)ids.size();
     if (n > CATALOG_MAX_ROWS) n = CATALOG_MAX_ROWS;
     for (int i = 0; i < n; i++) {
@@ -991,24 +1015,38 @@ void catalog_select(const char *games_dir) {
                 forced_pgn_path = copy_string(full.c_str());
                 forced_game_offset = ie.offset;
             }
+            // ...and afterwards keep drawing from the same list, so picking one
+            // Kasparov game leaves N playing the rest of them.
+            playback_scope = catalog_scope_ids;
+            free(scope_path);
+            scope_path = NULL;
             catalog_selection_made = 1;
             catalog_active = 0;
             return;
         }
 
         if (entry->type == 9) {
-            // Any game from the file currently being browsed.
-            const IndexEntry &any = game_index.entry(0);
-            (void)any;
-            std::string rel = game_index.file_path(catalog_file_id);
-            if (!rel.empty()) {
-                char *full = join_path(catalog_base_dir, rel.c_str());
-                if (full) {
-                    free(forced_pgn_path);
-                    forced_pgn_path = full;
-                    forced_game_offset = -1;    // -1 means "pick one at random"
-                }
-            }
+            // No particular game — take the whole file as the pool and let the
+            // player draw from it, now and on every N after.
+            playback_scope = game_index.games_in_file(catalog_file_id);
+            free(scope_path);
+            scope_path = NULL;
+            free(forced_pgn_path);
+            forced_pgn_path = NULL;
+            forced_game_offset = -1;
+            catalog_selection_made = 1;
+            catalog_active = 0;
+            return;
+        }
+
+        if (entry->type == 10) {
+            // Back to drawing from everything, which is how the program starts.
+            playback_scope.clear();
+            free(scope_path);
+            scope_path = NULL;
+            free(forced_pgn_path);
+            forced_pgn_path = NULL;
+            forced_game_offset = -1;
             catalog_selection_made = 1;
             catalog_active = 0;
             return;
@@ -1071,8 +1109,13 @@ void catalog_select(const char *games_dir) {
             free(dir_path);
             if (path) {
                 free(forced_pgn_path);
-                forced_pgn_path = path;
+                forced_pgn_path = NULL;
                 forced_game_offset = -1;
+                // Not in the index, so there are no entry ids to pool. Keep the
+                // file itself as the scope and draw a random game from it.
+                playback_scope.clear();
+                free(scope_path);
+                scope_path = path;
             }
         }
     }
@@ -4327,10 +4370,29 @@ int main(int argc, char *argv[]) {
     while (!quit) {
         if (need_new_selection) {
             GameSelection sel = {0};
+            sel.game_index = -1;
+            sel.offset = -1;
             if (forced_pgn_path) {
+                // A game the catalog picked. One shot: consume it and clear, or
+                // every N would replay the same game forever.
                 sel.path = copy_string(forced_pgn_path);
-                sel.game_index = -1;
                 sel.offset = forced_game_offset;
+                free(forced_pgn_path);
+                forced_pgn_path = NULL;
+                forced_game_offset = -1;
+            } else if (!playback_scope.empty()) {
+                // Draw from the pool the last pick came from — this player, year,
+                // file or search result.
+                int id = playback_scope[(size_t)(rand() % (int)playback_scope.size())];
+                const IndexEntry &ie = game_index.entry(id);
+                std::string full = game_index.full_path(ie);
+                if (!full.empty()) {
+                    sel.path = copy_string(full.c_str());
+                    sel.offset = ie.offset;
+                }
+            } else if (scope_path) {
+                // A file that is not in the index: any game from it.
+                sel.path = copy_string(scope_path);
             } else {
                 if (!choose_random_selection(games_dir, &sel)) {
                     printf("No PGN files found in %s\n", games_dir);
@@ -4458,6 +4520,7 @@ int main(int argc, char *argv[]) {
     free(history);
     catalog_free();
     free(forced_pgn_path);
+    free(scope_path);
 
     // Cleanup
     for (int i = 0; i < 256; i++) {
