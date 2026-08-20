@@ -1931,8 +1931,13 @@ void render_defense_lines(const BoardView *view) {
     // drew before. The animation was trying to convey direction, but a dozen
     // 24px ribbons crawling over each other read as noise and buried the very
     // thing they were meant to show. An arrow says it in one still frame.
-    SDL_Color white_arrow = {235, 235, 235, 175};
-    SDL_Color black_arrow = { 35,  35,  35, 195};
+    // Hue separates the two sides, not brightness. Grey arrows sat in the same
+    // tonal range as the pieces they crossed — a light arrow over a white piece,
+    // or a dark one over a black piece, effectively vanished, and both competed
+    // with the pieces for the same few shades. Blue and red read as a distinct
+    // layer over the neutral grey board whatever they pass over.
+    SDL_Color white_arrow = { 70, 150, 255, 215};   // blue for white's defenders
+    SDL_Color black_arrow = {235,  70,  60, 215};   // red for black's
 
     // Weight sits in the shaft rather than the head: a big head is what made a
     // crowded board look cluttered, since every arrow ended in a broad triangle
