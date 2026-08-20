@@ -107,6 +107,23 @@ int black_king_moved = 0;
 int black_rook_a_moved = 0;
 int black_rook_h_moved = 0;
 int catalog_active = 0;
+
+// ── Catalog thumbnails ───────────────────────────────────────────────────────
+// Two miniature boards beside the catalog list: the position once the opening
+// is out of the way, and the position the game finished in.
+//
+// A PGN is not one game the way an SGF is — the files here hold between 6 and
+// 59,000 — so these preview the FIRST game in the file, not the file as a whole.
+// That is more useful than it sounds for games/openings/, where every game shares
+// an opening by construction and the opening thumbnail is therefore representative
+// of all of them; for games/players/ it is a sample. The label says GAME 1 so it
+// cannot be misread as a summary of the file.
+#define THUMB_OPENING_PLIES 16
+char thumb_path[1024] = "";
+char thumb_open_board[BOARD_SIZE][BOARD_SIZE];
+char thumb_final_board[BOARD_SIZE][BOARD_SIZE];
+int  thumb_valid = 0;
+int  thumb_total_plies = 0;
 int catalog_selection_made = 0;
 CatalogEntry *catalog_entries = NULL;
 int catalog_entry_count = 0;
@@ -205,6 +222,11 @@ int piece_attacks_square(char piece, int from_r, int from_f, int to_r, int to_f,
 void draw_thick_line(int x1, int y1, int x2, int y2, int thickness, SDL_Color color);
 void render_defense_lines(const BoardView *view);
 void reset_castling_state(void);
+void clean_line(char *line);
+int build_move_list(const char *move_buffer, char moves[][MOVE_TEXT_LEN], int max_moves,
+                    char *result_out, size_t result_out_size);
+void thumbs_update(const char *path);
+void render_mini_board(int x, int y, int size, const char b[BOARD_SIZE][BOARD_SIZE]);
 void build_fen(char *out, size_t out_size);
 void save_fen_snapshot(const char *path);
 void resolve_app_paths(const char *base, char *games_dir_out, size_t games_dir_size);
@@ -784,8 +806,31 @@ int catalog_total_entries(void) {
     return catalog_entry_count;
 }
 
+// Full path of the highlighted entry, or empty for directories and the parent
+// link — only a file has a position worth previewing.
+static void catalog_selected_path(char *out, size_t out_size) {
+    if (!out || out_size == 0) return;
+    out[0] = '\0';
+    if (!catalog_active) return;
+    if (catalog_index < 0 || catalog_index >= catalog_entry_count) return;
+    const CatalogEntry *e = &catalog_entries[catalog_index];
+    if (e->type != 0) return;
+    if (catalog_dir[0] == '\0') {
+        snprintf(out, out_size, "%s%c%s", catalog_base_dir, PATH_SEP, e->name);
+    } else {
+        snprintf(out, out_size, "%s%c%s%c%s",
+                 catalog_base_dir, PATH_SEP, catalog_dir, PATH_SEP, e->name);
+    }
+}
+
 void render_catalog_overlay(const BoardView *view) {
     if (!catalog_active) return;
+
+    // Cheap when the highlight has not moved: thumbs_update compares the path
+    // first and only re-reads a game when the selection actually changed.
+    char sel_path[1024];
+    catalog_selected_path(sel_path, sizeof(sel_path));
+    thumbs_update(sel_path);
 
     const char *title = "CATALOG";
     const char *random_label = "[RANDOM FILE]";
@@ -828,13 +873,57 @@ void render_catalog_overlay(const BoardView *view) {
     int list_h = max_lines * line_h - line_gap;
     int box_w = max_w + pad * 2;
     int box_h = text_h + header_gap + list_h + pad * 2;
-    int x = (view->screen_w - box_w) / 2;
-    int y = (view->screen_h - box_h) / 2;
 
-    SDL_Rect bg = {x, y, box_w, box_h};
+    // Thumbnails sit to the right of the list, inside the same panel. The panel
+    // has to enclose them: drawn straight onto the board the captions land on
+    // whatever pieces happen to be behind them and become unreadable.
+    int thumb_gap   = pad * 3;
+    int thumb_label = text_h + line_gap;
+
+    // Height first — two boards plus their captions have to fit the screen with
+    // margins — then clamp to whatever width is left beside the list.
+    int avail_h    = view->screen_h - pad * 6 - thumb_label * 2;
+    int thumb_size = avail_h / 2;
+    int avail_w    = view->screen_w - box_w - thumb_gap - pad * 6;
+    if (thumb_size > avail_w) thumb_size = avail_w;
+    thumb_size = (thumb_size / BOARD_SIZE) * BOARD_SIZE;   // whole pixels per square
+    int show_thumbs = (thumb_size >= BOARD_SIZE * 8);      // unreadable below this
+
+    int thumb_col_h = show_thumbs ? (thumb_size * 2 + thumb_label * 2 + pad) : 0;
+    int panel_w = box_w + (show_thumbs ? thumb_gap + thumb_size + pad * 2 : 0);
+    int panel_h = (box_h > thumb_col_h + pad * 2) ? box_h : thumb_col_h + pad * 2;
+
+    // The panel is sized for the thumbnails whether or not the current row has
+    // any, so the list does not jump sideways while arrowing past directories.
+    int x = (view->screen_w - panel_w) / 2;
+    int y = (view->screen_h - panel_h) / 2;
+
+    SDL_Rect bg = {x, y, panel_w, panel_h};
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
     SDL_SetRenderDrawColor(renderer, 80, 80, 80, 190);
     SDL_RenderFillRect(renderer, &bg);
+
+    if (show_thumbs) {
+        int tx = x + box_w + thumb_gap;
+        int ty = y + (panel_h - thumb_col_h) / 2;
+        SDL_Color label_color = {225, 225, 225, 255};
+        SDL_Color dim_color   = {150, 150, 150, 255};
+        if (thumb_valid) {
+            char cap[64];
+            int shown = (thumb_total_plies < THUMB_OPENING_PLIES)
+                        ? thumb_total_plies : THUMB_OPENING_PLIES;
+            snprintf(cap, sizeof(cap), "GAME 1 - MOVE %d", (shown + 1) / 2);
+            draw_text(tx, ty, scale, cap, label_color);
+            render_mini_board(tx, ty + thumb_label, thumb_size, thumb_open_board);
+
+            int ty2 = ty + thumb_label + thumb_size + pad;
+            snprintf(cap, sizeof(cap), "FINAL - MOVE %d", (thumb_total_plies + 1) / 2);
+            draw_text(tx, ty2, scale, cap, label_color);
+            render_mini_board(tx, ty2 + thumb_label, thumb_size, thumb_final_board);
+        } else {
+            draw_text(tx, ty, scale, sel_path[0] ? "NO PREVIEW" : "", dim_color);
+        }
+    }
 
     SDL_Color text_color = {255, 255, 255, 255};
     int text_x = x + pad;
@@ -2257,6 +2346,132 @@ void apply_move(const Move *m, int is_white) {
             if (rook_from == 7) black_rook_h_moved = 1;
         }
     }
+}
+
+// Collect just the first game's move text. Stops at the second [Event rather
+// than parsing the file: the opening collections reach 39MB and tens of
+// thousands of games, and a thumbnail must not pay for all of them.
+int pgn_first_game(const char *path, char *out, size_t out_size) {
+    if (!path || !path[0] || !out || out_size == 0) return 0;
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    char line[512];
+    int in_game = 0;
+    size_t len = 0;
+    out[0] = '\0';
+    while (fgets(line, sizeof(line), f)) {
+        clean_line(line);
+        const char *trim = line;
+        while (isspace((unsigned char)*trim)) trim++;
+        if (strncmp(trim, "[Event", 6) == 0) {
+            if (in_game && len > 0) break;      // second game reached — done
+            in_game = 1;
+            continue;
+        }
+        if (!in_game || trim[0] == '[' || trim[0] == '\0') continue;
+        size_t tl = strlen(trim);
+        if (len + tl + 2 >= out_size) break;
+        if (len > 0) out[len++] = ' ';
+        memcpy(out + len, trim, tl);
+        len += tl;
+        out[len] = '\0';
+    }
+    fclose(f);
+    return len > 0;
+}
+
+// Replay `plies` half-moves onto `out`. parse_san and apply_move both work on
+// the global board and castling flags, so save and restore those around the
+// replay rather than growing a second copy of the move logic that could drift.
+int board_after_plies(char moves[][MOVE_TEXT_LEN], int move_count, int plies,
+                             char out[BOARD_SIZE][BOARD_SIZE]) {
+    char saved[BOARD_SIZE][BOARD_SIZE];
+    memcpy(saved, board, sizeof(saved));
+    int s_wk = white_king_moved, s_wra = white_rook_a_moved, s_wrh = white_rook_h_moved;
+    int s_bk = black_king_moved, s_bra = black_rook_a_moved, s_brh = black_rook_h_moved;
+
+    init_board();
+    reset_castling_state();
+    int limit = (plies < 0 || plies > move_count) ? move_count : plies;
+    int is_white = 1;
+    for (int i = 0; i < limit; i++) {
+        Move m = {0};
+        if (!parse_san(moves[i], is_white, &m)) break;   // stop at the first move
+        apply_move(&m, is_white);                        // we cannot read, keep the rest
+        is_white = !is_white;
+    }
+    memcpy(out, board, sizeof(char) * BOARD_SIZE * BOARD_SIZE);
+
+    memcpy(board, saved, sizeof(saved));
+    white_king_moved = s_wk; white_rook_a_moved = s_wra; white_rook_h_moved = s_wrh;
+    black_king_moved = s_bk; black_rook_a_moved = s_bra; black_rook_h_moved = s_brh;
+    return 1;
+}
+
+// Rebuild the cached thumbnails for `path`, but only when the selection has
+// actually moved — this reads and replays a game, which is far too much work to
+// repeat every frame while the list just sits there.
+void thumbs_update(const char *path) {
+    if (!path) path = "";
+    if (strcmp(path, thumb_path) == 0) return;
+    snprintf(thumb_path, sizeof(thumb_path), "%s", path);
+    thumb_valid = 0;
+    thumb_total_plies = 0;
+    if (!path[0]) return;
+
+    static char move_buffer[65536];
+    if (!pgn_first_game(path, move_buffer, sizeof(move_buffer))) return;
+
+    static char moves[MAX_MOVES][MOVE_TEXT_LEN];
+    char result[RESULT_LEN];
+    int count = build_move_list(move_buffer, moves, MAX_MOVES, result, sizeof(result));
+    if (count <= 0) return;
+
+    board_after_plies(moves, count, THUMB_OPENING_PLIES, thumb_open_board);
+    board_after_plies(moves, count, -1,                  thumb_final_board);
+    thumb_total_plies = count;
+    thumb_valid = 1;
+}
+
+// Miniature board. Follows view_from_white so a thumbnail is oriented the same
+// way the game will be when it opens.
+void render_mini_board(int x, int y, int size, const char b[BOARD_SIZE][BOARD_SIZE]) {
+    int sq = size / BOARD_SIZE;
+    if (sq < 1) sq = 1;
+    int dim = sq * BOARD_SIZE;
+
+    // Wider light/dark spread than the full-size board. The 125/105 pair the
+    // real board uses reads as flat grey once the squares are this small, and
+    // the chequer pattern is most of what makes a tiny board legible.
+    SDL_Color light = {140, 140, 140, 255};
+    SDL_Color dark  = { 92,  92,  92, 255};
+
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+    for (int r = 0; r < BOARD_SIZE; r++) {
+        for (int f = 0; f < BOARD_SIZE; f++) {
+            int dr = view_from_white ? r : (BOARD_SIZE - 1 - r);
+            int df = view_from_white ? f : (BOARD_SIZE - 1 - f);
+            SDL_Color c = ((r + f) % 2 == 0) ? light : dark;
+            SDL_Rect cell = {x + df * sq, y + dr * sq, sq, sq};
+            SDL_SetRenderDrawColor(renderer, c.r, c.g, c.b, 255);
+            SDL_RenderFillRect(renderer, &cell);
+        }
+    }
+    for (int r = 0; r < BOARD_SIZE; r++) {
+        for (int f = 0; f < BOARD_SIZE; f++) {
+            char piece = b[r][f];
+            if (piece == '.') continue;
+            SDL_Texture *tex = get_piece_texture(piece);
+            if (!tex) continue;
+            int dr = view_from_white ? r : (BOARD_SIZE - 1 - r);
+            int df = view_from_white ? f : (BOARD_SIZE - 1 - f);
+            SDL_Rect dst = {x + df * sq, y + dr * sq, sq, sq};
+            SDL_RenderCopy(renderer, tex, NULL, &dst);
+        }
+    }
+    SDL_SetRenderDrawColor(renderer, 150, 150, 150, 200);
+    SDL_Rect border = {x, y, dim, dim};
+    SDL_RenderDrawRect(renderer, &border);
 }
 
 // ── Shared key handling ──────────────────────────────────────────────────────
