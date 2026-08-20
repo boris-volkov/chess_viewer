@@ -1103,109 +1103,101 @@ void render_catalog_overlay(const BoardView *view) {
         break;
     }
     const char *title = title_buf;
-    const char *random_label = "[RANDOM FILE]";
     int total_entries = catalog_total_entries();
 
-    int scale = (view->square >= 60) ? 3 : 2;
-    int line_gap = (scale >= 3) ? 4 : 3;
+    // Full screen and opaque, rather than a translucent box floating over the
+    // board. The list can run to thousands of rows and the thumbnails want real
+    // estate; letting pieces show through both only made them harder to read.
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
+    SDL_SetRenderDrawColor(renderer, 26, 28, 33, 255);
+    SDL_Rect full = {0, 0, view->screen_w, view->screen_h};
+    SDL_RenderFillRect(renderer, &full);
+
+    // Text scales with the window now that it owns the screen.
+    int scale = (view->screen_w >= 1600) ? 4 : ((view->screen_w >= 1000) ? 3 : 2);
     int text_h = 7 * scale;
-    int pad = (scale >= 3) ? 10 : 8;
-    int header_gap = line_gap + (scale >= 3 ? 4 : 2);
-
-    int max_w = text_width_px(title, scale);
-    int random_w = text_width_px(random_label, scale);
-    if (random_w > max_w) max_w = random_w;
-    for (int i = 0; i < catalog_entry_count; i++) {
-        char label[1024];
-        const CatalogEntry *entry = &catalog_entries[i];
-        if (entry->type == 1) {
-            snprintf(label, sizeof(label), "[DIR] %s", entry->name);
-        } else if (entry->type == 2) {
-            snprintf(label, sizeof(label), "[..]");
-        } else {
-            snprintf(label, sizeof(label), "%s", entry->name);
-        }
-        int w = text_width_px(label, scale);
-        if (w > max_w) max_w = w;
-    }
-
-    // Leave the right-hand side for thumbnails rather than letting the longest
-    // game row take the whole window.
-    int list_max_w = view->screen_w * 46 / 100;
-    if (max_w > list_max_w) max_w = list_max_w;
-
-    int available_h = view->screen_h - pad * 4 - text_h - header_gap;
+    int line_gap = scale * 2;
     int line_h = text_h + line_gap;
-    int max_lines = (available_h > 0) ? (available_h / line_h) : 0;
-    if (max_lines < 4) max_lines = 4;
+    int hpad = view->screen_w / 22;
+    int vpad = view->screen_h / 22;
+    int header_gap = text_h;
+
+    SDL_Color title_color = {255, 255, 180, 255};
+    SDL_Color text_color  = {235, 235, 235, 255};
+    SDL_Color dim_color   = {140, 140, 150, 255};
+
+    int title_y  = vpad;
+    int footer_y = view->screen_h - vpad - text_h;
+    int list_top = title_y + text_h + header_gap;
+    int list_bot = footer_y - line_h;
+
+    // Thumbnails: two stacked boards with a caption each, filling the column
+    // height, then clamped so the list keeps the majority of the width.
+    int thumb_label = text_h + line_gap;
+    int thumb_gap   = vpad / 2;
+    int thumb_size  = (list_bot - list_top - thumb_label * 2 - thumb_gap) / 2;
+    int thumb_max_w = (view->screen_w - hpad * 3) * 42 / 100;
+    if (thumb_size > thumb_max_w) thumb_size = thumb_max_w;
+    thumb_size = (thumb_size / BOARD_SIZE) * BOARD_SIZE;    // whole pixels per square
+    // Player and year lists have no game to preview — their rows are people and
+    // dates — so they take the full width instead of holding open a column that
+    // can never be filled.
+    int view_has_games = (catalog_view != CATVIEW_PLAYER_LIST &&
+                          catalog_view != CATVIEW_YEAR_LIST);
+    int show_thumbs = view_has_games && (thumb_size >= BOARD_SIZE * 10);
+
+    int thumb_x = view->screen_w - hpad - thumb_size;
+    int list_w  = show_thumbs ? (thumb_x - hpad * 2) : (view->screen_w - hpad * 2);
+    if (list_w < 100) list_w = 100;
+
+    int max_lines = (list_bot > list_top) ? ((list_bot - list_top) / line_h) : 0;
+    if (max_lines < 1) max_lines = 1;
     if (max_lines > total_entries) max_lines = total_entries;
 
     if (catalog_index < catalog_scroll) catalog_scroll = catalog_index;
     if (catalog_index >= catalog_scroll + max_lines) {
         catalog_scroll = catalog_index - max_lines + 1;
     }
+    if (catalog_scroll < 0) catalog_scroll = 0;
 
-    int list_h = max_lines * line_h - line_gap;
-    int box_w = max_w + pad * 2;
-    int box_h = text_h + header_gap + list_h + pad * 2;
+    draw_text(hpad, title_y, scale, title, title_color);
 
-    // Thumbnails sit to the right of the list, inside the same panel. The panel
-    // has to enclose them: drawn straight onto the board the captions land on
-    // whatever pieces happen to be behind them and become unreadable.
-    int thumb_gap   = pad * 3;
-    int thumb_label = text_h + line_gap;
+    // Footer states the keys rather than leaving them to be discovered.
+    const char *footer = (catalog_view == CATVIEW_SEARCH)
+                       ? "TYPE TO SEARCH   ENTER OPEN   ESC BACK"
+                       : "ENTER OPEN   / SEARCH   ESC CLOSE";
+    draw_text(hpad, footer_y, scale, footer, dim_color);
 
-    // Height first — two boards plus their captions have to fit the screen with
-    // margins — then clamp to whatever width is left beside the list.
-    int avail_h    = view->screen_h - pad * 6 - thumb_label * 2;
-    int thumb_size = avail_h / 2;
-    int avail_w    = view->screen_w - box_w - thumb_gap - pad * 6;
-    if (thumb_size > avail_w) thumb_size = avail_w;
-    thumb_size = (thumb_size / BOARD_SIZE) * BOARD_SIZE;   // whole pixels per square
-    int show_thumbs = (thumb_size >= BOARD_SIZE * 8);      // unreadable below this
-
-    int thumb_col_h = show_thumbs ? (thumb_size * 2 + thumb_label * 2 + pad) : 0;
-    int panel_w = box_w + (show_thumbs ? thumb_gap + thumb_size + pad * 2 : 0);
-    int panel_h = (box_h > thumb_col_h + pad * 2) ? box_h : thumb_col_h + pad * 2;
-
-    // The panel is sized for the thumbnails whether or not the current row has
-    // any, so the list does not jump sideways while arrowing past directories.
-    int x = (view->screen_w - panel_w) / 2;
-    int y = (view->screen_h - panel_h) / 2;
-
-    SDL_Rect bg = {x, y, panel_w, panel_h};
-    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
-    SDL_SetRenderDrawColor(renderer, 80, 80, 80, 190);
-    SDL_RenderFillRect(renderer, &bg);
+    // How much of the result set is actually on screen, when it is capped.
+    if (catalog_result_total > total_entries) {
+        char more[96];
+        snprintf(more, sizeof(more), "SHOWING %d OF %d", total_entries, catalog_result_total);
+        int w = text_width_px(more, scale);
+        draw_text(view->screen_w - hpad - w, footer_y, scale, more, dim_color);
+    }
 
     if (show_thumbs) {
-        int tx = x + box_w + thumb_gap;
-        int ty = y + (panel_h - thumb_col_h) / 2;
-        SDL_Color label_color = {225, 225, 225, 255};
-        SDL_Color dim_color   = {150, 150, 150, 255};
+        int block_h = thumb_size * 2 + thumb_label * 2 + thumb_gap;
+        int ty = list_top + ((list_bot - list_top) - block_h) / 2;
+        if (ty < list_top) ty = list_top;
         if (thumb_valid) {
             char cap[64];
             int shown = (thumb_total_plies < THUMB_OPENING_PLIES)
                         ? thumb_total_plies : THUMB_OPENING_PLIES;
-            snprintf(cap, sizeof(cap), "GAME 1 - MOVE %d", (shown + 1) / 2);
-            draw_text(tx, ty, scale, cap, label_color);
-            render_mini_board(tx, ty + thumb_label, thumb_size, thumb_open_board);
+            snprintf(cap, sizeof(cap), "OPENING - MOVE %d", (shown + 1) / 2);
+            draw_text(thumb_x, ty, scale, cap, text_color);
+            render_mini_board(thumb_x, ty + thumb_label, thumb_size, thumb_open_board);
 
-            int ty2 = ty + thumb_label + thumb_size + pad;
+            int ty2 = ty + thumb_label + thumb_size + thumb_gap;
             snprintf(cap, sizeof(cap), "FINAL - MOVE %d", (thumb_total_plies + 1) / 2);
-            draw_text(tx, ty2, scale, cap, label_color);
-            render_mini_board(tx, ty2 + thumb_label, thumb_size, thumb_final_board);
-        } else {
-            draw_text(tx, ty, scale, sel_path[0] ? "NO PREVIEW" : "", dim_color);
+            draw_text(thumb_x, ty2, scale, cap, text_color);
+            render_mini_board(thumb_x, ty2 + thumb_label, thumb_size, thumb_final_board);
+        } else if (sel_path[0]) {
+            draw_text(thumb_x, ty, scale, "NO PREVIEW", dim_color);
         }
     }
 
-    SDL_Color text_color = {255, 255, 255, 255};
-    int text_x = x + pad;
-    int text_y = y + pad;
-    draw_text(text_x, text_y, scale, title, text_color);
-    text_y += text_h + header_gap;
-
+    int text_y = list_top;
     for (int i = 0; i < max_lines; i++) {
         int idx = catalog_scroll + i;
         if (idx >= total_entries) break;
@@ -1218,14 +1210,16 @@ void render_catalog_overlay(const BoardView *view) {
         } else {
             snprintf(label, sizeof(label), "%s", entry->name);
         }
-        fit_text(label, scale, max_w);
+        fit_text(label, scale, list_w);
         if (idx == catalog_index) {
-            SDL_Rect hi = {text_x - 3, text_y - 3, max_w + 6, text_h + 6};
-            SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
-            SDL_SetRenderDrawColor(renderer, 40, 120, 255, 190);
+            SDL_Rect hi = {hpad - scale * 2, text_y - line_gap / 2,
+                           list_w + scale * 4, text_h + line_gap};
+            SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
+            SDL_SetRenderDrawColor(renderer, 40, 110, 220, 255);
             SDL_RenderFillRect(renderer, &hi);
         }
-        draw_text(text_x, text_y, scale, label, text_color);
+        draw_text(hpad, text_y, scale, label,
+                  (idx == catalog_index) ? title_color : text_color);
         text_y += line_h;
     }
 }
