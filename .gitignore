@@ -70,3 +70,9 @@ settings.txt
 
 # Test scratch files
 settings_test_scratch.txt
+
+# Generated game index cache (rebuilt on demand)
+.chess_viewer_index
+
+# Index test scratch tree
+index_test_scratch/

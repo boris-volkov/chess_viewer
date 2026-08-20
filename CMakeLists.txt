@@ -4,7 +4,9 @@ project(chess_viewer CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-add_executable(chess_viewer chess_viewer.cpp)
+add_executable(chess_viewer chess_viewer.cpp game_index.cpp)
+
+find_package(Threads REQUIRED)
 
 find_package(SDL2 CONFIG QUIET)
 find_package(SDL2_image CONFIG QUIET)
@@ -40,7 +42,7 @@ endif()
 if (TARGET SDL2::SDL2main)
     target_link_libraries(chess_viewer PRIVATE SDL2::SDL2main)
 endif()
-target_link_libraries(chess_viewer PRIVATE SDL2::SDL2 SDL2_image::SDL2_image)
+target_link_libraries(chess_viewer PRIVATE SDL2::SDL2 SDL2_image::SDL2_image Threads::Threads)
 
 # The app resolves games/pieces relative to its own executable directory
 # (see SDL_GetBasePath() in main()), so keep local builds runnable the same
@@ -66,17 +68,19 @@ enable_testing()
 # SDL_MAIN_HANDLED and supplies a plain console main(), so linking SDL2main
 # would drag in a WinMain that calls an SDL_main these binaries don't have.
 function(add_chess_viewer_test name source)
-    add_executable(${name} EXCLUDE_FROM_ALL ${source})
+    add_executable(${name} EXCLUDE_FROM_ALL ${source} game_index.cpp)
     target_include_directories(${name} PRIVATE "${CMAKE_SOURCE_DIR}")
-    target_link_libraries(${name} PRIVATE SDL2::SDL2 SDL2_image::SDL2_image)
+    target_link_libraries(${name} PRIVATE SDL2::SDL2 SDL2_image::SDL2_image Threads::Threads)
 endfunction()
 
 add_chess_viewer_test(test_menu     tests/menu_test.cpp)
 add_chess_viewer_test(test_settings tests/settings_test.cpp)
+add_chess_viewer_test(test_index    tests/index_test.cpp)
 
 add_test(NAME menu_geometry COMMAND test_menu)
 add_test(NAME settings      COMMAND test_settings)
+add_test(NAME game_index    COMMAND test_index)
 
 # Convenience aggregate: `cmake --build build --target tests` builds them all,
 # which is what ctest needs before it can run anything.
-add_custom_target(tests DEPENDS test_menu test_settings)
+add_custom_target(tests DEPENDS test_menu test_settings test_index)
