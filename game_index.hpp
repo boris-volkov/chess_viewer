@@ -67,6 +67,12 @@ public:
     // Distinct player name ids with their game counts, most games first.
     std::vector<std::pair<int, int>> players_by_frequency() const;
 
+    // Entry indices for every game held in one file, in file order.
+    std::vector<int> games_in_file(int file_id) const;
+
+    // File id for a path relative to the index root, or -1.
+    int find_file(const std::string &rel_path) const;
+
     // Distinct years present, descending.
     std::vector<int> years() const;
     std::vector<int> games_in_year(int year) const;

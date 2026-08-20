@@ -126,10 +126,12 @@ enum {
     CATVIEW_YEAR_LIST,
     CATVIEW_YEAR_GAMES,
     CATVIEW_SEARCH,
+    CATVIEW_FILE_GAMES,
 };
 int  catalog_view = CATVIEW_FILES;
 int  catalog_player_id = -1;
 int  catalog_year = 0;
+int  catalog_file_id = -1;
 int  catalog_search_mode = 0;
 char catalog_search[64] = "";
 GameIndex game_index;
@@ -883,6 +885,15 @@ static int catalog_load_virtual(void) {
         push_games(&entries, &count, &cap, game_index.games_in_year(catalog_year));
         break;
     }
+    case CATVIEW_FILE_GAMES: {
+        push_catalog_entry_id(&entries, &count, &cap, "[..]", 2, -1);
+        // A PGN holds anywhere from 6 to 59,066 games, so opening one used to
+        // mean "play a random game from it". That is still worth having, but as
+        // an explicit row rather than the only thing selecting a file could do.
+        push_catalog_entry_id(&entries, &count, &cap, "[RANDOM GAME]", 9, -1);
+        push_games(&entries, &count, &cap, game_index.games_in_file(catalog_file_id));
+        break;
+    }
     case CATVIEW_SEARCH: {
         push_catalog_entry_id(&entries, &count, &cap, "[..]", 2, -1);
         if (catalog_search[0]) {
@@ -985,6 +996,24 @@ void catalog_select(const char *games_dir) {
             return;
         }
 
+        if (entry->type == 9) {
+            // Any game from the file currently being browsed.
+            const IndexEntry &any = game_index.entry(0);
+            (void)any;
+            std::string rel = game_index.file_path(catalog_file_id);
+            if (!rel.empty()) {
+                char *full = join_path(catalog_base_dir, rel.c_str());
+                if (full) {
+                    free(forced_pgn_path);
+                    forced_pgn_path = full;
+                    forced_game_offset = -1;    // -1 means "pick one at random"
+                }
+            }
+            catalog_selection_made = 1;
+            catalog_active = 0;
+            return;
+        }
+
         if (entry->type == 2) {
             // In a virtual view ".." climbs back through the views rather
             // than the directory tree.
@@ -1010,6 +1039,27 @@ void catalog_select(const char *games_dir) {
             catalog_scroll = 0;
             return;
         }
+
+        // A PGN file is a container, not a game — the collections here hold
+        // between 6 and 59,066 apiece. Opening one lists its games rather than
+        // picking one blind, the same way a player folder does.
+        if (entry->type == 0 && game_index.loaded()) {
+            char rel[1024];
+            if (catalog_dir[0] == '\0') {
+                snprintf(rel, sizeof(rel), "%s", entry->name);
+            } else {
+                snprintf(rel, sizeof(rel), "%s%c%s", catalog_dir, PATH_SEP, entry->name);
+            }
+            int fid = game_index.find_file(rel);
+            if (fid >= 0) {
+                catalog_file_id = fid;
+                catalog_set_view(CATVIEW_FILE_GAMES);
+                return;
+            }
+            // Not in the index (added since the last build) — fall through and
+            // open it the old way rather than refusing to do anything.
+        }
+
         char *dir_path = NULL;
         if (catalog_dir[0] == '\0') {
             dir_path = copy_string(games_dir);
@@ -1052,13 +1102,9 @@ static void catalog_selected_path(char *out, size_t out_size, long long *out_off
         if (out_offset) *out_offset = ie.offset;
         return;
     }
-    if (e->type != 0) return;
-    if (catalog_dir[0] == '\0') {
-        snprintf(out, out_size, "%s%c%s", catalog_base_dir, PATH_SEP, e->name);
-    } else {
-        snprintf(out, out_size, "%s%c%s%c%s",
-                 catalog_base_dir, PATH_SEP, catalog_dir, PATH_SEP, e->name);
-    }
+    // Everything else is a container — a directory, a PGN file, a player, a
+    // year — and has no single position to show. Previewing a file's first game
+    // made the file look like a game, which is the confusion the index removed.
 }
 
 void render_catalog_overlay(const BoardView *view) {
@@ -1094,6 +1140,14 @@ void render_catalog_overlay(const BoardView *view) {
     case CATVIEW_YEAR_GAMES:
         snprintf(title_buf, sizeof(title_buf), "%d  (%d GAMES)", catalog_year, catalog_result_total);
         break;
+    case CATVIEW_FILE_GAMES: {
+        std::string rel = game_index.file_path(catalog_file_id);
+        size_t sep = rel.find_last_of("/\\");
+        std::string base = (sep == std::string::npos) ? rel : rel.substr(sep + 1);
+        snprintf(title_buf, sizeof(title_buf), "%s  (%d GAMES)",
+                 base.c_str(), catalog_result_total);
+        break;
+    }
     case CATVIEW_SEARCH:
         snprintf(title_buf, sizeof(title_buf), "SEARCH: %s_  (%d)",
                  catalog_search, catalog_result_total);
@@ -1142,6 +1196,8 @@ void render_catalog_overlay(const BoardView *view) {
     // Player and year lists have no game to preview — their rows are people and
     // dates — so they take the full width instead of holding open a column that
     // can never be filled.
+    // FILES still counts: its rows are containers, but the column stays open so
+    // the list does not resize when stepping between a directory and a game view.
     int view_has_games = (catalog_view != CATVIEW_PLAYER_LIST &&
                           catalog_view != CATVIEW_YEAR_LIST);
     int show_thumbs = view_has_games && (thumb_size >= BOARD_SIZE * 10);

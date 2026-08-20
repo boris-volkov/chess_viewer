@@ -463,6 +463,28 @@ std::vector<std::pair<int, int>> GameIndex::players_by_frequency() const {
     return out;
 }
 
+std::vector<int> GameIndex::games_in_file(int file_id) const {
+    std::vector<int> out;
+    if (!loaded() || file_id < 0) return out;
+    for (size_t i = 0; i < entries_.size(); i++)
+        if (entries_[i].file_id == file_id) out.push_back((int)i);
+    return out;
+}
+
+int GameIndex::find_file(const std::string &rel_path) const {
+    if (!loaded()) return -1;
+    // The catalog builds paths with the platform separator while the index
+    // stored whatever the directory walk produced, so compare both normalised.
+    auto norm = [](std::string s) {
+        for (char &c : s) if (c == '/') c = '\\';
+        return s;
+    };
+    std::string want = norm(rel_path);
+    for (size_t i = 0; i < files_.size(); i++)
+        if (norm(files_[i]) == want) return (int)i;
+    return -1;
+}
+
 std::vector<int> GameIndex::years() const {
     std::vector<int> out;
     if (!loaded()) return out;

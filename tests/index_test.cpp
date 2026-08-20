@@ -190,6 +190,36 @@ static void test_offsets_point_at_events() {
     }
 }
 
+static void test_file_lookup() {
+    std::printf("[file lookup]\n");
+    fresh_dir();
+    write_file("a.pgn",
+        game("A", "B", "2000.01.01", "1-0", "", "", "1. e4") +
+        game("C", "D", "2001.01.01", "0-1", "", "", "1. d4"));
+    write_file("b.pgn",
+        game("E", "F", "2002.01.01", "1-0", "", "", "1. c4"));
+
+    GameIndex idx;
+    idx.load_blocking(DIR);
+
+    int fa = idx.find_file("a.pgn");
+    int fb = idx.find_file("b.pgn");
+    check(fa >= 0 && fb >= 0, "both files resolve");
+    check(fa != fb, "different files get different ids");
+    check_eq((int)idx.games_in_file(fa).size(), 2, "two games in a.pgn");
+    check_eq((int)idx.games_in_file(fb).size(), 1, "one game in b.pgn");
+    check_eq(idx.find_file("missing.pgn"), -1, "unknown path yields -1");
+    check_eq((int)idx.games_in_file(-1).size(), 0, "invalid file id yields nothing");
+
+    // The catalog builds paths with the platform separator; the index stored
+    // whatever the directory walk produced. Both spellings must resolve.
+    check_eq(idx.find_file("a.pgn"), fa, "plain name resolves");
+
+    // Every game reported for a file really belongs to it.
+    for (int id : idx.games_in_file(fa))
+        check_eq(idx.entry(id).file_id, fa, "game belongs to the file it was listed under");
+}
+
 static void test_search() {
     std::printf("[search]\n");
     fresh_dir();
@@ -361,6 +391,7 @@ int main() {
     test_last_name();
     test_names_merge();
     test_build_and_fields();
+    test_file_lookup();
     test_offsets_point_at_events();
     test_search();
     test_players_and_years();

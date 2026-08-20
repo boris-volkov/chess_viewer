@@ -79,9 +79,13 @@ a per-game index of every PGN under `games/`:
   into that player's games across all files.
 - **`[BY YEAR]`** — the same, grouped by year.
 - **`/`** — search all games by player name or year as you type.
+- **A PGN file** — opens as a folder of its games, with a `[RANDOM GAME]` row
+  at the top for when you just want to watch something from it.
 
 Rows in these views are individual games, not files, so the preview boards show
 that game's opening and final position. Selecting one opens exactly that game.
+Containers — directories, PGN files, players, years — show no preview, since
+there is no single position they stand for.
 
 Players are listed by surname. The source PGNs tag the same person several
 ways — `Ivanchuk,V` and `Ivanchuk, Vassily` were separate entries — so taking
