@@ -2850,13 +2850,16 @@ void render_mini_board(int x, int y, int size, const char b[BOARD_SIZE][BOARD_SI
     SDL_Color light = {140, 140, 140, 255};
     SDL_Color dark  = { 92,  92,  92, 255};
 
+    // Always white at the bottom, deliberately ignoring view_from_white. Playback
+    // picks its orientation at random per game (see main()), so following it made
+    // catalog previews flip about half the time with nothing the reader could
+    // attribute it to. A reference thumbnail wants one fixed, conventional
+    // orientation; board[0] is rank 8, so drawing rows in order puts black on top.
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
     for (int r = 0; r < BOARD_SIZE; r++) {
         for (int f = 0; f < BOARD_SIZE; f++) {
-            int dr = view_from_white ? r : (BOARD_SIZE - 1 - r);
-            int df = view_from_white ? f : (BOARD_SIZE - 1 - f);
             SDL_Color c = ((r + f) % 2 == 0) ? light : dark;
-            SDL_Rect cell = {x + df * sq, y + dr * sq, sq, sq};
+            SDL_Rect cell = {x + f * sq, y + r * sq, sq, sq};
             SDL_SetRenderDrawColor(renderer, c.r, c.g, c.b, 255);
             SDL_RenderFillRect(renderer, &cell);
         }
@@ -2867,9 +2870,7 @@ void render_mini_board(int x, int y, int size, const char b[BOARD_SIZE][BOARD_SI
             if (piece == '.') continue;
             SDL_Texture *tex = get_piece_texture(piece);
             if (!tex) continue;
-            int dr = view_from_white ? r : (BOARD_SIZE - 1 - r);
-            int df = view_from_white ? f : (BOARD_SIZE - 1 - f);
-            SDL_Rect dst = {x + df * sq, y + dr * sq, sq, sq};
+            SDL_Rect dst = {x + f * sq, y + r * sq, sq, sq};
             SDL_RenderCopy(renderer, tex, NULL, &dst);
         }
     }
