@@ -87,10 +87,14 @@ that game's opening and final position. Selecting one opens exactly that game.
 Containers — directories, PGN files, players, years — show no preview, since
 there is no single position they stand for.
 
-Choosing a game plays that game, and then `N` keeps drawing at random from the
-list it came from — pick one Kasparov game and `N` plays the rest of his 3,176,
-wherever they live in the collection. `[RANDOM GAME]` inside a file does the
-same for that file, and `[ALL GAMES]` goes back to drawing from everything.
+Every list of games starts with a **`[RANDOM GAME]`** row, which plays that
+list at random — open `[BY PLAYER]`, pick Tal, choose it, and `N` keeps drawing
+from his 2,921 games wherever in the collection they live. The same row appears
+in a year's games, a file's games and search results.
+
+Choosing a specific game instead plays that one, then continues randomly through
+the same list. `[ALL GAMES]` at the tree root goes back to drawing from
+everything.
 
 Players are listed by surname. The source PGNs tag the same person several
 ways — `Ivanchuk,V` and `Ivanchuk, Vassily` were separate entries — so taking

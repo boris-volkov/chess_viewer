@@ -584,6 +584,8 @@ void render_help_overlay(const BoardView *view) {
         "CATALOG (C):",
         "  UP/DOWN: SELECT ROW",
         "  /: SEARCH ALL GAMES",
+        "  [RANDOM GAME]: PLAY",
+        "   THAT LIST AT RANDOM",
         "  PICK A GAME: PLAYS IT,",
         "   THEN N CONTINUES",
         "   RANDOMLY IN THAT LIST",
@@ -861,6 +863,9 @@ static int catalog_load_virtual(void) {
     int count = 0;
     int cap = 0;
     catalog_result_total = 0;
+    // Cleared up front so a view that lists no games cannot leave the previous
+    // view's pool behind for [RANDOM GAME] to pick up.
+    catalog_scope_ids.clear();
 
     if (!game_index.loaded()) {
         // The index builds on a background thread; say so rather than showing an
@@ -890,6 +895,7 @@ static int catalog_load_virtual(void) {
     }
     case CATVIEW_PLAYER_GAMES: {
         push_catalog_entry_id(&entries, &count, &cap, "[..]", 2, -1);
+        push_catalog_entry_id(&entries, &count, &cap, "[RANDOM GAME]", 9, -1);
         push_games(&entries, &count, &cap, game_index.games_of_player(catalog_player_id));
         break;
     }
@@ -906,14 +912,14 @@ static int catalog_load_virtual(void) {
     }
     case CATVIEW_YEAR_GAMES: {
         push_catalog_entry_id(&entries, &count, &cap, "[..]", 2, -1);
+        push_catalog_entry_id(&entries, &count, &cap, "[RANDOM GAME]", 9, -1);
         push_games(&entries, &count, &cap, game_index.games_in_year(catalog_year));
         break;
     }
     case CATVIEW_FILE_GAMES: {
         push_catalog_entry_id(&entries, &count, &cap, "[..]", 2, -1);
-        // A PGN holds anywhere from 6 to 59,066 games, so opening one used to
-        // mean "play a random game from it". That is still worth having, but as
-        // an explicit row rather than the only thing selecting a file could do.
+        // Every list of games offers this: start playing the list without
+        // having to single one out first.
         push_catalog_entry_id(&entries, &count, &cap, "[RANDOM GAME]", 9, -1);
         push_games(&entries, &count, &cap, game_index.games_in_file(catalog_file_id));
         break;
@@ -921,6 +927,7 @@ static int catalog_load_virtual(void) {
     case CATVIEW_SEARCH: {
         push_catalog_entry_id(&entries, &count, &cap, "[..]", 2, -1);
         if (catalog_search[0]) {
+            push_catalog_entry_id(&entries, &count, &cap, "[RANDOM GAME]", 9, -1);
             // Unlimited search so the header can report how many games really
             // matched; push_games caps how many rows get built. Measured at
             // ~11ms over 419,617 games, which is fine per keystroke.
@@ -1026,9 +1033,10 @@ void catalog_select(const char *games_dir) {
         }
 
         if (entry->type == 9) {
-            // No particular game — take the whole file as the pool and let the
-            // player draw from it, now and on every N after.
-            playback_scope = game_index.games_in_file(catalog_file_id);
+            // No particular game — take whatever list is showing as the pool and
+            // draw from it, now and on every N after. Works the same whether that
+            // list is a file, a player, a year or a set of search results.
+            playback_scope = catalog_scope_ids;
             free(scope_path);
             scope_path = NULL;
             free(forced_pgn_path);
