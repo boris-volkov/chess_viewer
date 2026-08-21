@@ -55,9 +55,11 @@
 #ifdef _WIN32
 #define PATH_SEP '\\'
 #define PATH_SEP_STR "\\"
+#define FSEEK64(f, off, whence) _fseeki64(f, off, whence)
 #else
 #define PATH_SEP '/'
 #define PATH_SEP_STR "/"
+#define FSEEK64(f, off, whence) fseeko64(f, off, whence)
 #endif
 
 // type: 0 PGN file, 1 directory, 2 parent "..", 3 indexed game,
@@ -266,7 +268,7 @@ int piece_attacks_square(char piece, int from_r, int from_f, int to_r, int to_f,
 void draw_thick_line(int x1, int y1, int x2, int y2, int thickness, SDL_Color color);
 void render_defense_lines(const BoardView *view);
 void reset_castling_state(void);
-void clean_line(char *line);
+void clean_line(char *line, int *comment_depth, int *var_depth);
 int build_move_list(const char *move_buffer, char moves[][MOVE_TEXT_LEN], int max_moves,
                     char *result_out, size_t result_out_size);
 void thumbs_update(const char *path, long long offset);
@@ -1728,7 +1730,14 @@ void init_board() {
         "RNBQKBNR"
     };
     for (int i = 0; i < BOARD_SIZE; i++) {
-        strcpy(board[i], initial[i]);
+        // memcpy, not strcpy: each row is exactly BOARD_SIZE bytes with no
+        // room for a NUL terminator. strcpy copied all 9 bytes of each
+        // "rnbqkbnr"-style literal, overflowing one byte into the next row
+        // (and, for the last row, one byte past the entire board array into
+        // whatever global happened to sit next to it in memory) every single
+        // time a game got replayed to build a position -- including the two
+        // replays behind every catalog thumbnail.
+        memcpy(board[i], initial[i], BOARD_SIZE);
     }
     reset_castling_state();
 }
@@ -2771,13 +2780,14 @@ int pgn_game_at_offset(const char *path, long long offset, char *out, size_t out
     if (!path || !path[0] || !out || out_size == 0 || offset < 0) return 0;
     FILE *f = fopen(path, "r");
     if (!f) return 0;
-    if (_fseeki64(f, offset, SEEK_SET) != 0) { fclose(f); return 0; }
+    if (FSEEK64(f, offset, SEEK_SET) != 0) { fclose(f); return 0; }
     char line[512];
     int in_game = 0;
+    int comment_depth = 0, var_depth = 0;
     size_t len = 0;
     out[0] = 0;
     while (fgets(line, sizeof(line), f)) {
-        clean_line(line);
+        clean_line(line, &comment_depth, &var_depth);
         const char *trim = line;
         while (isspace((unsigned char)*trim)) trim++;
         if (strncmp(trim, "[Event", 6) == 0) {
@@ -2806,10 +2816,11 @@ int pgn_first_game(const char *path, char *out, size_t out_size) {
     if (!f) return 0;
     char line[512];
     int in_game = 0;
+    int comment_depth = 0, var_depth = 0;
     size_t len = 0;
     out[0] = '\0';
     while (fgets(line, sizeof(line), f)) {
-        clean_line(line);
+        clean_line(line, &comment_depth, &var_depth);
         const char *trim = line;
         while (isspace((unsigned char)*trim)) trim++;
         if (strncmp(trim, "[Event", 6) == 0) {
@@ -3140,19 +3151,22 @@ int animate_move(const Move *m, int is_white) {
     return 0;
 }
 
-void clean_line(char *line) {
+// comment_depth/var_depth persist across the calls a caller makes for one
+// game (or one file), so a {comment} or (variation) that spans several lines
+// -- or nests, e.g. "(3. Nf3 ... (3... Bb4) ... 6. Bh4 O-O)" -- stays stripped
+// for its entire extent instead of the first inner ')' or '}' ending it early
+// and leaking the rest of the variation into the real move list.
+void clean_line(char *line, int *comment_depth, int *var_depth) {
     char *out = line;
-    int in_comment = 0;
-    int in_var = 0;
     while (*line) {
-        if (*line == '{') in_comment = 1;
-        else if (*line == '}') in_comment = 0;
-        else if (*line == '(') in_var = 1;
-        else if (*line == ')') in_var = 0;
+        if (*line == '{') { (*comment_depth)++; }
+        else if (*line == '}') { if (*comment_depth > 0) (*comment_depth)--; }
+        else if (*line == '(') { (*var_depth)++; }
+        else if (*line == ')') { if (*var_depth > 0) (*var_depth)--; }
         else if (*line == ';') {
             while (*line && *line != '\n') line++;
             continue;
-        } else if (!in_comment && !in_var) {
+        } else if (*comment_depth == 0 && *var_depth == 0) {
             *out++ = *line;
         }
         line++;
@@ -3541,7 +3555,7 @@ void free_games(Game *games, int count) {
 // walking the file that contains it.
 int load_game_at_offset(FILE *fp, long long offset, Game **out_games) {
     if (!fp || offset < 0) return 0;
-    if (_fseeki64(fp, offset, SEEK_SET) != 0) return 0;
+    if (FSEEK64(fp, offset, SEEK_SET) != 0) return 0;
 
     Game *games = NULL;
     int count = 0;
@@ -3552,9 +3566,10 @@ int load_game_at_offset(FILE *fp, long long offset, Game **out_games) {
     char date[NAME_LEN] = "", welo[NAME_LEN] = "", belo[NAME_LEN] = "";
     char year[YEAR_LEN] = "", result[RESULT_LEN] = "";
     int seen_event = 0;
+    int comment_depth = 0, var_depth = 0;
 
     while (fgets(line, sizeof(line), fp)) {
-        clean_line(line);
+        clean_line(line, &comment_depth, &var_depth);
         const char *trim = line;
         while (isspace((unsigned char)*trim)) trim++;
         if (strncmp(trim, "[Event", 6) == 0) {
@@ -3604,9 +3619,10 @@ int load_games(FILE *fp, Game **out_games) {
     char current_year[YEAR_LEN] = "";
     char current_result[RESULT_LEN] = "";
     int in_game = 0;
+    int comment_depth = 0, var_depth = 0;
 
     while (fgets(line, sizeof(line), fp)) {
-        clean_line(line);
+        clean_line(line, &comment_depth, &var_depth);
         const char *trim = line;
         while (isspace((unsigned char)*trim)) trim++;
         if (strncmp(trim, "[Event", 6) == 0) {  // New game starts
@@ -3625,6 +3641,10 @@ int load_games(FILE *fp, Game **out_games) {
             current_year[0] = '\0';
             current_result[0] = '\0';
             in_game = 1;
+            // A malformed game with an unclosed { or ( must not swallow every
+            // game that follows it in the file.
+            comment_depth = 0;
+            var_depth = 0;
             continue;  // Skip header lines
         }
         if (in_game && trim[0] == '[') {
