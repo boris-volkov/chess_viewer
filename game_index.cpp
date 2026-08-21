@@ -8,9 +8,11 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#define FTELL64(f) _ftelli64(f)
 #else
 #include <dirent.h>
 #include <sys/stat.h>
+#define FTELL64(f) ftello64(f)
 #endif
 
 namespace {
@@ -266,7 +268,7 @@ void GameIndex::do_load(std::string games_dir) {
         long long pos = 0;
         while (fgets(line, sizeof(line), f)) {
             long long line_start = pos;
-            pos = _ftelli64(f);
+            pos = FTELL64(f);
             if (line[0] != '[') continue;
             std::string v;
             if (tag_value(line, "Event", v)) {
