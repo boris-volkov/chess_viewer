@@ -90,6 +90,12 @@ public:
     // defers to it so the catalog and the playback caption cannot disagree.
     static std::string last_name(const std::string &full);
 
+    // Root the index was built over, and the fingerprint that keys its cache.
+    // The opening book hangs off both: it lives beside the index and has to go
+    // stale on exactly the same edits.
+    const std::string &base_dir() const { return base_dir_; }
+    unsigned long long fingerprint_value() const { return fingerprint_; }
+
     // Where the cache lives, for tests and for reporting.
     static std::string index_file_path(const std::string &games_dir);
 
@@ -104,6 +110,7 @@ private:
 
     std::atomic<bool> loaded_{false};
     std::atomic<bool> loading_{false};
+    unsigned long long fingerprint_ = 0;
     std::atomic<int>  progress_{0};
     std::thread       thread_;
 

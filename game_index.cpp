@@ -247,6 +247,7 @@ void GameIndex::do_load(std::string games_dir) {
     full.reserve(rel.size());
     for (const auto &r : rel) full.push_back(join(games_dir, r));
     unsigned long long fp = fingerprint(full);
+    fingerprint_ = fp;
 
     if (read_cache(index_file_path(games_dir), fp)) {
         loaded_.store(true, std::memory_order_release);

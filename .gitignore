@@ -76,3 +76,9 @@ settings_test_scratch.txt
 
 # Index test scratch tree
 index_test_scratch/
+
+# Generated opening book (rebuilt on demand)
+.chess_viewer_openings
+
+# Opening book test scratch
+opening_test_scratch.bin

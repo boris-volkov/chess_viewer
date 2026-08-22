@@ -4,7 +4,7 @@ project(chess_viewer CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-add_executable(chess_viewer chess_viewer.cpp game_index.cpp)
+add_executable(chess_viewer chess_viewer.cpp game_index.cpp opening_book.cpp)
 
 find_package(Threads REQUIRED)
 
@@ -68,7 +68,7 @@ enable_testing()
 # SDL_MAIN_HANDLED and supplies a plain console main(), so linking SDL2main
 # would drag in a WinMain that calls an SDL_main these binaries don't have.
 function(add_chess_viewer_test name source)
-    add_executable(${name} EXCLUDE_FROM_ALL ${source} game_index.cpp)
+    add_executable(${name} EXCLUDE_FROM_ALL ${source} game_index.cpp opening_book.cpp)
     target_include_directories(${name} PRIVATE "${CMAKE_SOURCE_DIR}")
     target_link_libraries(${name} PRIVATE SDL2::SDL2 SDL2_image::SDL2_image Threads::Threads)
 endfunction()
@@ -76,11 +76,13 @@ endfunction()
 add_chess_viewer_test(test_menu     tests/menu_test.cpp)
 add_chess_viewer_test(test_settings tests/settings_test.cpp)
 add_chess_viewer_test(test_index    tests/index_test.cpp)
+add_chess_viewer_test(test_opening  tests/opening_test.cpp)
 
 add_test(NAME menu_geometry COMMAND test_menu)
 add_test(NAME settings      COMMAND test_settings)
 add_test(NAME game_index    COMMAND test_index)
+add_test(NAME opening_book  COMMAND test_opening)
 
 # Convenience aggregate: `cmake --build build --target tests` builds them all,
 # which is what ctest needs before it can run anything.
-add_custom_target(tests DEPENDS test_menu test_settings test_index)
+add_custom_target(tests DEPENDS test_menu test_settings test_index test_opening)

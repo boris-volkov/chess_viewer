@@ -23,6 +23,7 @@
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_image.h>
 #include "game_index.hpp"
+#include "opening_book.hpp"
 #include <vector>
 #include <utility>
 
@@ -137,6 +138,9 @@ int  catalog_file_id = -1;
 int  catalog_search_mode = 0;
 char catalog_search[64] = "";
 GameIndex game_index;
+// Set while the opening book is being built, so the progress frame can be
+// interrupted by a quit or ESC.
+int opening_build_cancelled = 0;
 
 // ── Catalog thumbnails ───────────────────────────────────────────────────────
 // Two miniature boards beside the catalog list: the position once the opening
@@ -3678,6 +3682,175 @@ error:
     free_games(games, count);
     *out_games = NULL;
     return -1;
+}
+
+// ── Opening book ─────────────────────────────────────────────────────────────
+// The book stores positions but knows no chess, so the walk lives here, next to
+// parse_san and apply_move.
+//
+// It runs on the main thread rather than the index's background one, because
+// those two work on the global board and castling flags — replaying games off
+// the main thread would race with whatever is being played and drawn. Building
+// on demand with a progress frame costs a few seconds once; after that it comes
+// from the cache next to the index.
+
+OpeningBook opening_book;
+
+static unsigned long long zobrist_table[64][13];
+static int zobrist_ready = 0;
+
+static void zobrist_init(void) {
+    if (zobrist_ready) return;
+    // Fixed seed: the cache stores these hashes, so they have to come out the
+    // same on every run and every machine.
+    unsigned long long s = 88172645463325252ULL;
+    for (int i = 0; i < 64; i++) {
+        for (int j = 0; j < 13; j++) {
+            s ^= s << 13; s ^= s >> 7; s ^= s << 17;
+            zobrist_table[i][j] = s;
+        }
+    }
+    zobrist_ready = 1;
+}
+
+static int zobrist_piece_code(char p) {
+    switch (p) {
+    case 'P': return 1;  case 'N': return 2;  case 'B': return 3;
+    case 'R': return 4;  case 'Q': return 5;  case 'K': return 6;
+    case 'p': return 7;  case 'n': return 8;  case 'b': return 9;
+    case 'r': return 10; case 'q': return 11; case 'k': return 12;
+    default:  return 0;
+    }
+}
+
+// Hash of the current global board. Side to move is mixed in so the same
+// arrangement with the other player to move is a different position.
+unsigned long long position_key(int white_to_move) {
+    zobrist_init();
+    unsigned long long h = white_to_move ? 0x9E3779B97F4A7C15ULL : 0ULL;
+    for (int r = 0; r < BOARD_SIZE; r++) {
+        for (int f = 0; f < BOARD_SIZE; f++) {
+            int c = zobrist_piece_code(board[r][f]);
+            if (c) h ^= zobrist_table[r * BOARD_SIZE + f][c];
+        }
+    }
+    return h;
+}
+
+// Replay the opening of one game, filling `keys` and `moves`. Returns how many
+// plies were understood — a game that stops parsing early still contributes the
+// moves up to that point, which is what you want for an opening tree.
+static int opening_walk(const char *move_text,
+                        unsigned long long *keys, char (*moves)[8]) {
+    static char mv[MAX_MOVES][MOVE_TEXT_LEN];
+    char result[RESULT_LEN];
+    int mc = build_move_list(move_text, mv, MAX_MOVES, result, sizeof(result));
+    if (mc <= 0) return 0;
+
+    init_board();
+    reset_castling_state();
+    int limit = (mc < OpeningBook::MAX_PLIES) ? mc : OpeningBook::MAX_PLIES;
+    int is_white = 1;
+    int n = 0;
+    for (int i = 0; i < limit; i++) {
+        Move m = {0};
+        if (!parse_san(mv[i], is_white, &m)) break;
+        apply_move(&m, is_white);
+        is_white = !is_white;
+        keys[n] = position_key(is_white);
+        snprintf(moves[n], 8, "%s", mv[i]);
+        n++;
+    }
+    return n;
+}
+
+// Draw a single progress frame. The build is a few seconds of straight-line
+// work on the thread that also owns the window, so it has to say something.
+static void opening_progress(int done, int total) {
+    BoardView view;
+    get_board_view(&view);
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
+    SDL_SetRenderDrawColor(renderer, 26, 28, 33, 255);
+    SDL_Rect full = {0, 0, view.screen_w, view.screen_h};
+    SDL_RenderFillRect(renderer, &full);
+
+    int scale = (view.screen_w >= 1600) ? 4 : ((view.screen_w >= 1000) ? 3 : 2);
+    SDL_Color accent = {255, 255, 180, 255};
+    SDL_Color dim    = {150, 150, 160, 255};
+    char msg[96];
+    snprintf(msg, sizeof(msg), "READING OPENINGS  %d%%",
+             total > 0 ? (int)((long long)done * 100 / total) : 0);
+    int w = text_width_px(msg, scale);
+    draw_text((view.screen_w - w) / 2, view.screen_h / 2 - 20, scale, msg, accent);
+
+    const char *note = "ONCE ONLY - CACHED AFTERWARDS";
+    int w2 = text_width_px(note, scale >= 3 ? scale - 1 : scale);
+    draw_text((view.screen_w - w2) / 2, view.screen_h / 2 + 20,
+              scale >= 3 ? scale - 1 : scale, note, dim);
+    SDL_RenderPresent(renderer);
+
+    // Keep the window answering the compositor; a quit here is honoured by the
+    // caller checking opening_build_cancelled.
+    SDL_Event e;
+    while (SDL_PollEvent(&e)) {
+        if (e.type == SDL_QUIT) opening_build_cancelled = 1;
+        else if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_ESCAPE)
+            opening_build_cancelled = 1;
+    }
+}
+
+// Build the book over every indexed game, or load it from cache. Returns 0 if
+// it could not be produced (index not ready, or the user cancelled).
+int opening_book_ensure(void) {
+    if (opening_book.ready()) return 1;
+    if (!game_index.loaded()) return 0;
+
+    std::string path = OpeningBook::book_path(game_index.base_dir());
+    if (opening_book.load(path, game_index.fingerprint_value())) return 1;
+
+    opening_build_cancelled = 0;
+    opening_book.begin_build();
+
+    unsigned long long keys[OpeningBook::MAX_PLIES];
+    char moves[OpeningBook::MAX_PLIES][8];
+
+    // Walk file by file so each PGN is read once, the way the index build does.
+    int total = game_index.count();
+    int done = 0;
+    int file_count = 0;
+    while (!game_index.file_path(file_count).empty()) file_count++;
+
+    for (int fi = 0; fi < file_count && !opening_build_cancelled; fi++) {
+        std::vector<int> ids = game_index.games_in_file(fi);
+        if (ids.empty()) continue;
+        std::string full = game_index.full_path(game_index.entry(ids[0]));
+        FILE *fp = fopen(full.c_str(), "r");
+        if (!fp) { done += (int)ids.size(); continue; }
+        Game *games = NULL;
+        int n = load_games(fp, &games);
+        fclose(fp);
+        // The index and a fresh read must agree on how many games the file holds,
+        // or the ids would not line up with what was just parsed.
+        int limit = (n < (int)ids.size()) ? n : (int)ids.size();
+        for (int i = 0; i < limit; i++) {
+            int np = opening_walk(games[i].moves, keys, moves);
+            opening_book.add_game(ids[i], keys, moves, np);
+            done++;
+            if ((done & 2047) == 0) {
+                opening_progress(done, total);
+                if (opening_build_cancelled) break;
+            }
+        }
+        free_games(games, n);
+    }
+
+    if (opening_build_cancelled) {
+        opening_book.clear();
+        return 0;
+    }
+    opening_book.finish_build();
+    opening_book.save(path, game_index.fingerprint_value());
+    return 1;
 }
 
 void shuffle_games(Game *games, int count) {
