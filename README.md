@@ -72,8 +72,9 @@ cmake --build build
 
 ## Catalog
 
-Press `C` for the catalog. Alongside the on-disk tree it offers views built from
-a per-game index of every PGN under `games/`:
+Press `C` for the catalog. Every view is built from a per-game index of the PGNs
+under `games/`, so games are found by what they are rather than by which file
+they happen to sit in:
 
 - **`[BY PLAYER]`** — every player in the collection, most games first, drilling
   into that player's games across all files.
@@ -84,18 +85,22 @@ a per-game index of every PGN under `games/`:
   the board beside the list shows where you are. `[SHOW GAMES]` lists the games
   that reached it, and `/` there searches *within that line* — which is how you
   find, say, Tal's games in the King's Gambit.
-- **A PGN file** — opens as a folder of its games, with a `[RANDOM GAME]` row
-  at the top for when you just want to watch something from it.
+- **`[ALL GAMES]`** — draw from the whole collection.
 
 Rows in these views are individual games, not files, so the preview boards show
-that game's opening and final position. Selecting one opens exactly that game.
-Containers — directories, PGN files, players, years — show no preview, since
+that game's opening and final position, and selecting one opens exactly that
+game. Containers — players, years, opening positions — show no preview, since
 there is no single position they stand for.
+
+The on-disk layout is not browsable, deliberately: `games/openings/` and
+`games/players/` said less than `[BY OPENING]` and `[BY PLAYER]` do. Both of
+those span the whole collection rather than one file, and neither makes a
+59,000-game PGN look like a single thing.
 
 Every list of games starts with a **`[RANDOM GAME]`** row, which plays that
 list at random — open `[BY PLAYER]`, pick Tal, choose it, and `N` keeps drawing
 from his 2,921 games wherever in the collection they live. The same row appears
-in a year's games, a file's games and search results.
+in a year's games, an opening's games and search results.
 
 Choosing a specific game instead plays that one, then continues randomly through
 the same list. `[ALL GAMES]` at the tree root goes back to drawing from

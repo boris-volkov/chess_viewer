@@ -123,20 +123,18 @@ int catalog_active = 0;
 // virtual, assembled from the game index, and their rows are individual games
 // rather than files.
 enum {
-    CATVIEW_FILES = 0,
+    CATVIEW_ROOT = 0,
     CATVIEW_PLAYER_LIST,
     CATVIEW_PLAYER_GAMES,
     CATVIEW_YEAR_LIST,
     CATVIEW_YEAR_GAMES,
     CATVIEW_SEARCH,
-    CATVIEW_FILE_GAMES,
     CATVIEW_OPENING,        // walking the opening tree
     CATVIEW_OPENING_GAMES,  // the games that reached the current position
 };
-int  catalog_view = CATVIEW_FILES;
+int  catalog_view = CATVIEW_ROOT;
 int  catalog_player_id = -1;
 int  catalog_year = 0;
-int  catalog_file_id = -1;
 
 // Where the opening explorer currently stands. The line is kept as text and
 // the board rebuilt from it, rather than trying to undo moves: replaying at
@@ -149,6 +147,12 @@ char opening_board[BOARD_SIZE][BOARD_SIZE];
 // inside an opening looks for a player among those games rather than all
 // 419,617 of them. Empty means search everything.
 std::vector<int> catalog_search_base;
+// Matches before the display cap, for the header line.
+int catalog_result_total = 0;
+// Ids of every game in the view currently listed — the full set, not the
+// capped display rows, so choosing one game from a player's thousands leaves
+// all of them as the pool to continue from.
+std::vector<int> catalog_scope_ids;
 extern OpeningBook opening_book;
 int  catalog_search_mode = 0;
 char catalog_search[64] = "";
@@ -190,13 +194,9 @@ int catalog_scroll = 0;
 // is how the program starts.
 char *forced_pgn_path = NULL;
 std::vector<int> playback_scope;
-// Fallback pool for a PGN that is not in the index: keep drawing from that
-// one file, which is what selecting a file did before the index existed.
-char *scope_path = NULL;
 // Byte offset of the game the catalog picked, or -1 for "any game in the file".
 long long forced_game_offset = -1;
 char catalog_base_dir[1024] = "";
-char catalog_dir[1024] = "";
 int suppress_present = 0;
 int analysis_saved_dim = 0;
 int analysis_saved_show_loser_king = 0;
@@ -616,6 +616,8 @@ void render_help_overlay(const BoardView *view) {
         "  SCORE: 1 POINT IF MATCH",
         "CATALOG (C):",
         "  UP/DOWN: SELECT ROW",
+        "  ALL VIEWS COME FROM",
+        "   THE GAME INDEX",
         "  /: SEARCH ALL GAMES",
         "  [BY OPENING]: WALK THE",
         "   OPENING TREE, THEN",
@@ -664,27 +666,6 @@ void render_help_overlay(const BoardView *view) {
     }
 }
 
-static int filename_cmp(const void *a, const void *b) {
-    const char *sa = *(const char *const *)a;
-    const char *sb = *(const char *const *)b;
-#ifdef _WIN32
-    return _stricmp(sa, sb);
-#else
-    return strcasecmp(sa, sb);
-#endif
-}
-
-static int catalog_entry_cmp(const void *a, const void *b) {
-    const CatalogEntry *ea = (const CatalogEntry *)a;
-    const CatalogEntry *eb = (const CatalogEntry *)b;
-    if (ea->type != eb->type) return (ea->type < eb->type) ? -1 : 1;
-#ifdef _WIN32
-    return _stricmp(ea->name, eb->name);
-#else
-    return strcasecmp(ea->name, eb->name);
-#endif
-}
-
 static int push_catalog_entry_id(CatalogEntry **items, int *count, int *cap,
                                  const char *name, int type, int index_id) {
     if (*count >= *cap) {
@@ -702,150 +683,33 @@ static int push_catalog_entry_id(CatalogEntry **items, int *count, int *cap,
     return 1;
 }
 
-static int push_catalog_entry(CatalogEntry **items, int *count, int *cap,
-                              const char *name, int type) {
-    return push_catalog_entry_id(items, count, cap, name, type, -1);
-}
-
-static void catalog_set_dir(const char *new_dir) {
-    if (!new_dir) {
-        catalog_dir[0] = '\0';
-        return;
-    }
-    strncpy(catalog_dir, new_dir, sizeof(catalog_dir) - 1);
-    catalog_dir[sizeof(catalog_dir) - 1] = '\0';
-}
-
-static void catalog_dir_up(void) {
-    size_t len = strlen(catalog_dir);
-    if (len == 0) return;
-    for (size_t i = len; i > 0; i--) {
-        if (catalog_dir[i - 1] == '/' || catalog_dir[i - 1] == '\\') {
-            catalog_dir[i - 1] = '\0';
-            return;
-        }
-    }
-    catalog_dir[0] = '\0';
-}
-
 static int catalog_load_entries(const char *games_dir) {
+    // The catalog root is a menu of index views, not the directory tree. The
+    // tree used to be the only way in, but browsing games/openings/ and
+    // games/players/ says less than [BY OPENING] and [BY PLAYER] do: both span
+    // the whole collection instead of whichever file a game happens to sit in,
+    // and neither makes a 59,000-game PGN look like one thing.
+    (void)games_dir;
     CatalogEntry *entries = NULL;
     int count = 0;
     int cap = 0;
+    catalog_result_total = 0;
+    catalog_scope_ids.clear();
 
-    // Ways into the index, offered at the top of the tree root. They are not
-    // directories on disk — they are views over all 419,617 indexed games.
-    if (catalog_dir[0] == 0) {
-        push_catalog_entry_id(&entries, &count, &cap, "[ALL GAMES]", 10, -1);
-        push_catalog_entry_id(&entries, &count, &cap, "[BY OPENING]", 13, -1);
-        push_catalog_entry_id(&entries, &count, &cap, "[BY PLAYER]", 4, -1);
-        push_catalog_entry_id(&entries, &count, &cap, "[BY YEAR]",   6, -1);
-    }
-    char *dir_path = NULL;
-    if (catalog_dir[0] == '\0') {
-        dir_path = copy_string(games_dir);
-    } else {
-        dir_path = join_path(games_dir, catalog_dir);
-    }
-    if (!dir_path) return 0;
+    push_catalog_entry_id(&entries, &count, &cap, "[ALL GAMES]",  10, -1);
+    push_catalog_entry_id(&entries, &count, &cap, "[BY OPENING]", 13, -1);
+    push_catalog_entry_id(&entries, &count, &cap, "[BY PLAYER]",   4, -1);
+    push_catalog_entry_id(&entries, &count, &cap, "[BY YEAR]",     6, -1);
 
-#ifdef _WIN32
-    char *search = join_path(dir_path, "*");
-    if (!search) {
-        free(dir_path);
-        return 0;
-    }
-    WIN32_FIND_DATAA data;
-    HANDLE h = FindFirstFileA(search, &data);
-    free(search);
-    if (h == INVALID_HANDLE_VALUE) {
-        free(dir_path);
-        return 0;
-    }
-    do {
-        if (strcmp(data.cFileName, ".") == 0 || strcmp(data.cFileName, "..") == 0) continue;
-        if (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-            if (!push_catalog_entry(&entries, &count, &cap, data.cFileName, 1)) {
-                FindClose(h);
-                free(dir_path);
-                catalog_entries = entries;
-                catalog_entry_count = count;
-                return 0;
-            }
-        } else if (has_pgn_extension(data.cFileName)) {
-            if (!push_catalog_entry(&entries, &count, &cap, data.cFileName, 0)) {
-                FindClose(h);
-                free(dir_path);
-                catalog_entries = entries;
-                catalog_entry_count = count;
-                return 0;
-            }
-        }
-    } while (FindNextFileA(h, &data));
-    FindClose(h);
-#else
-    DIR *d = opendir(dir_path);
-    if (!d) {
-        free(dir_path);
-        return 0;
-    }
-    struct dirent *ent;
-    while ((ent = readdir(d)) != NULL) {
-        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
-        char *full = join_path(dir_path, ent->d_name);
-        if (!full) {
-            closedir(d);
-            free(dir_path);
-            return 0;
-        }
-        int is_dir = 0;
-#ifdef DT_DIR
-        if (ent->d_type == DT_DIR) is_dir = 1;
-        if (ent->d_type == DT_UNKNOWN)
-#endif
-        {
-            DIR *probe = opendir(full);
-            if (probe) {
-                is_dir = 1;
-                closedir(probe);
-            }
-        }
-        if (is_dir) {
-            if (!push_catalog_entry(&entries, &count, &cap, ent->d_name, 1)) {
-                free(full);
-                closedir(d);
-                free(dir_path);
-                return 0;
-            }
-        } else if (has_pgn_extension(ent->d_name)) {
-            if (!push_catalog_entry(&entries, &count, &cap, ent->d_name, 0)) {
-                free(full);
-                closedir(d);
-                free(dir_path);
-                return 0;
-            }
-        }
-        free(full);
-    }
-    closedir(d);
-#endif
-
-    if (catalog_dir[0] != '\0') {
-        push_catalog_entry(&entries, &count, &cap, "..", 2);
+    if (!game_index.loaded()) {
+        char msg[64];
+        snprintf(msg, sizeof(msg), "Building index... %d", game_index.progress());
+        push_catalog_entry_id(&entries, &count, &cap, msg, 8, -1);
     }
 
-    if (count > 1) {
-        qsort(entries, (size_t)count, sizeof(entries[0]), catalog_entry_cmp);
-    }
-
-    for (int i = 0; i < catalog_entry_count; i++) {
-        free(catalog_entries[i].name);
-    }
-    free(catalog_entries);
     catalog_entries = entries;
     catalog_entry_count = count;
-    free(dir_path);
-    return 1;
+    return count;
 }
 
 // ── Virtual catalog views ────────────────────────────────────────────────────
@@ -857,8 +721,6 @@ static int catalog_load_entries(const char *games_dir) {
 // Building a row per match would mean hundreds of thousands of allocations for
 // a list nobody can scroll, so results are capped and the total reported.
 #define CATALOG_MAX_ROWS 2000
-
-int catalog_result_total = 0;    // matches before the cap, for the header line
 
 // "White - Black  (1985) 1-0", trimmed to fit a catalog row.
 static void format_game_row(int entry_id, char *out, size_t out_size) {
@@ -875,11 +737,6 @@ static void format_game_row(int entry_id, char *out, size_t out_size) {
         snprintf(out, out_size, "%s - %s  %s", w[0] ? w : "?", b[0] ? b : "?", res);
     }
 }
-
-// Ids of every game in the view currently listed — the full set, not the
-// capped display rows, so choosing one game from Kasparov's 2,212 leaves all
-// 2,212 as the pool to continue from.
-std::vector<int> catalog_scope_ids;
 
 // Case-insensitive substring match over an entry's players and year, used to
 // narrow an existing list rather than the whole index.
@@ -1008,14 +865,6 @@ static int catalog_load_virtual(void) {
         push_games(&entries, &count, &cap, game_index.games_in_year(catalog_year));
         break;
     }
-    case CATVIEW_FILE_GAMES: {
-        push_catalog_entry_id(&entries, &count, &cap, "[..]", 2, -1);
-        // Every list of games offers this: start playing the list without
-        // having to single one out first.
-        push_catalog_entry_id(&entries, &count, &cap, "[RANDOM GAME]", 9, -1);
-        push_games(&entries, &count, &cap, game_index.games_in_file(catalog_file_id));
-        break;
-    }
     case CATVIEW_OPENING: {
         // Rows are the moves actually played from here, most popular first, so
         // the list reads like an opening book: pick a move, see what follows.
@@ -1082,7 +931,7 @@ static void catalog_set_view(int view) {
     int was_active = catalog_active;
     catalog_free();
     catalog_active = was_active;
-    if (view == CATVIEW_FILES) {
+    if (view == CATVIEW_ROOT) {
         catalog_load_entries(catalog_base_dir);
     } else {
         catalog_load_virtual();
@@ -1111,7 +960,6 @@ void catalog_open(const char *games_dir) {
     // Store the base directory for consistent navigation
     strncpy(catalog_base_dir, games_dir, sizeof(catalog_base_dir) - 1);
     catalog_base_dir[sizeof(catalog_base_dir) - 1] = '\0';
-    catalog_set_dir("");
     if (!catalog_load_entries(games_dir)) {
         catalog_entries = NULL;
         catalog_entry_count = 0;
@@ -1124,6 +972,7 @@ void catalog_open(const char *games_dir) {
 }
 
 void catalog_select(const char *games_dir) {
+    (void)games_dir;   // rows are index views now, not paths
     if (!catalog_active) return;
     int entry_index = catalog_index;
     if (entry_index >= 0 && entry_index < catalog_entry_count) {
@@ -1177,8 +1026,6 @@ void catalog_select(const char *games_dir) {
             // ...and afterwards keep drawing from the same list, so picking one
             // Kasparov game leaves N playing the rest of them.
             playback_scope = catalog_scope_ids;
-            free(scope_path);
-            scope_path = NULL;
             catalog_selection_made = 1;
             catalog_active = 0;
             return;
@@ -1189,8 +1036,6 @@ void catalog_select(const char *games_dir) {
             // draw from it, now and on every N after. Works the same whether that
             // list is a file, a player, a year or a set of search results.
             playback_scope = catalog_scope_ids;
-            free(scope_path);
-            scope_path = NULL;
             free(forced_pgn_path);
             forced_pgn_path = NULL;
             forced_game_offset = -1;
@@ -1202,8 +1047,6 @@ void catalog_select(const char *games_dir) {
         if (entry->type == 10) {
             // Back to drawing from everything, which is how the program starts.
             playback_scope.clear();
-            free(scope_path);
-            scope_path = NULL;
             free(forced_pgn_path);
             forced_pgn_path = NULL;
             forced_game_offset = -1;
@@ -1213,77 +1056,18 @@ void catalog_select(const char *games_dir) {
         }
 
         if (entry->type == 2) {
-            // In a virtual view ".." climbs back through the views rather
-            // than the directory tree.
+            // ".." climbs back through the views. The explorer goes up one
+            // move at a time; everything else returns to the root menu.
             if (catalog_view == CATVIEW_OPENING_GAMES) { catalog_set_view(CATVIEW_OPENING); return; }
             if (catalog_view == CATVIEW_OPENING) {
-                // Back one move, or out of the explorer once at the start.
                 if (opening_up()) { catalog_set_view(CATVIEW_OPENING); return; }
-                catalog_set_view(CATVIEW_FILES);
+                catalog_set_view(CATVIEW_ROOT);
                 return;
             }
             if (catalog_view == CATVIEW_PLAYER_GAMES) { catalog_set_view(CATVIEW_PLAYER_LIST); return; }
             if (catalog_view == CATVIEW_YEAR_GAMES)   { catalog_set_view(CATVIEW_YEAR_LIST);   return; }
-            if (catalog_view != CATVIEW_FILES)        { catalog_set_view(CATVIEW_FILES);       return; }
-            catalog_dir_up();
-            catalog_load_entries(games_dir);
-            catalog_index = 0;
-            catalog_scroll = 0;
+            catalog_set_view(CATVIEW_ROOT);
             return;
-        }
-        if (entry->type == 1) {
-            char next_dir[1024];
-            if (catalog_dir[0] == '\0') {
-                snprintf(next_dir, sizeof(next_dir), "%s", entry->name);
-            } else {
-                snprintf(next_dir, sizeof(next_dir), "%s%c%s", catalog_dir, PATH_SEP, entry->name);
-            }
-            catalog_set_dir(next_dir);
-            catalog_load_entries(games_dir);
-            catalog_index = 0;
-            catalog_scroll = 0;
-            return;
-        }
-
-        // A PGN file is a container, not a game — the collections here hold
-        // between 6 and 59,066 apiece. Opening one lists its games rather than
-        // picking one blind, the same way a player folder does.
-        if (entry->type == 0 && game_index.loaded()) {
-            char rel[1024];
-            if (catalog_dir[0] == '\0') {
-                snprintf(rel, sizeof(rel), "%s", entry->name);
-            } else {
-                snprintf(rel, sizeof(rel), "%s%c%s", catalog_dir, PATH_SEP, entry->name);
-            }
-            int fid = game_index.find_file(rel);
-            if (fid >= 0) {
-                catalog_file_id = fid;
-                catalog_set_view(CATVIEW_FILE_GAMES);
-                return;
-            }
-            // Not in the index (added since the last build) — fall through and
-            // open it the old way rather than refusing to do anything.
-        }
-
-        char *dir_path = NULL;
-        if (catalog_dir[0] == '\0') {
-            dir_path = copy_string(games_dir);
-        } else {
-            dir_path = join_path(games_dir, catalog_dir);
-        }
-        if (dir_path) {
-            char *path = join_path(dir_path, entry->name);
-            free(dir_path);
-            if (path) {
-                free(forced_pgn_path);
-                forced_pgn_path = NULL;
-                forced_game_offset = -1;
-                // Not in the index, so there are no entry ids to pool. Keep the
-                // file itself as the scope and draw a random game from it.
-                playback_scope.clear();
-                free(scope_path);
-                scope_path = path;
-            }
         }
     }
     catalog_selection_made = 1;
@@ -1329,7 +1113,7 @@ void render_catalog_overlay(const BoardView *view) {
 
     // A virtual view opened while the index was still building shows only a
     // placeholder row; rebuild it the first frame after the index lands.
-    if (catalog_view != CATVIEW_FILES && game_index.loaded() &&
+    if (catalog_view != CATVIEW_ROOT && game_index.loaded() &&
         catalog_entry_count > 0 && catalog_entries[0].type == 8) {
         catalog_set_view(catalog_view);
     }
@@ -1350,14 +1134,6 @@ void render_catalog_overlay(const BoardView *view) {
     case CATVIEW_YEAR_GAMES:
         snprintf(title_buf, sizeof(title_buf), "%d  (%d GAMES)", catalog_year, catalog_result_total);
         break;
-    case CATVIEW_FILE_GAMES: {
-        std::string rel = game_index.file_path(catalog_file_id);
-        size_t sep = rel.find_last_of("/\\");
-        std::string base = (sep == std::string::npos) ? rel : rel.substr(sep + 1);
-        snprintf(title_buf, sizeof(title_buf), "%s  (%d GAMES)",
-                 base.c_str(), catalog_result_total);
-        break;
-    }
     case CATVIEW_OPENING: {
         char line[160];
         opening_line_text(line, sizeof(line));
@@ -1764,6 +1540,7 @@ int handle_menu_event(const SDL_Event *e) {
 }
 
 int handle_catalog_event(const SDL_Event *e, const char *games_dir) {
+    (void)games_dir;
     if (!catalog_active) return 0;
     if (e->type == SDL_KEYDOWN) {
         SDL_Keycode key = e->key.keysym.sym;
@@ -1774,7 +1551,7 @@ int handle_catalog_event(const SDL_Event *e, const char *games_dir) {
             if (key == SDLK_ESCAPE) {
                 catalog_search_mode = 0;
                 catalog_search[0] = 0;
-                catalog_set_view(CATVIEW_FILES);
+                catalog_set_view(CATVIEW_ROOT);
                 return 1;
             }
             if (key == SDLK_BACKSPACE) {
@@ -4851,9 +4628,6 @@ int main(int argc, char *argv[]) {
                     sel.path = copy_string(full.c_str());
                     sel.offset = ie.offset;
                 }
-            } else if (scope_path) {
-                // A file that is not in the index: any game from it.
-                sel.path = copy_string(scope_path);
             } else {
                 if (!choose_random_selection(games_dir, &sel)) {
                     printf("No PGN files found in %s\n", games_dir);
@@ -4981,7 +4755,6 @@ int main(int argc, char *argv[]) {
     free(history);
     catalog_free();
     free(forced_pgn_path);
-    free(scope_path);
 
     // Cleanup
     for (int i = 0; i < 256; i++) {
