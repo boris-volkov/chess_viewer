@@ -130,11 +130,26 @@ enum {
     CATVIEW_YEAR_GAMES,
     CATVIEW_SEARCH,
     CATVIEW_FILE_GAMES,
+    CATVIEW_OPENING,        // walking the opening tree
+    CATVIEW_OPENING_GAMES,  // the games that reached the current position
 };
 int  catalog_view = CATVIEW_FILES;
 int  catalog_player_id = -1;
 int  catalog_year = 0;
 int  catalog_file_id = -1;
+
+// Where the opening explorer currently stands. The line is kept as text and
+// the board rebuilt from it, rather than trying to undo moves: replaying at
+// most 16 plies is instant and cannot drift the way an unmake would.
+int  opening_node = -1;
+int  opening_ply = 0;
+char opening_moves[32][MOVE_TEXT_LEN];
+char opening_board[BOARD_SIZE][BOARD_SIZE];
+// Games to search within when a query is typed from a narrowed list, so /
+// inside an opening looks for a player among those games rather than all
+// 419,617 of them. Empty means search everything.
+std::vector<int> catalog_search_base;
+extern OpeningBook opening_book;
 int  catalog_search_mode = 0;
 char catalog_search[64] = "";
 GameIndex game_index;
@@ -275,6 +290,12 @@ void reset_castling_state(void);
 void clean_line(char *line, int *comment_depth, int *var_depth);
 int build_move_list(const char *move_buffer, char moves[][MOVE_TEXT_LEN], int max_moves,
                     char *result_out, size_t result_out_size);
+int  opening_book_ensure(void);
+void opening_reset(void);
+void opening_descend(int child);
+int  opening_up(void);
+void opening_line_text(char *out, size_t out_size);
+unsigned long long position_key(int white_to_move);
 void thumbs_update(const char *path, long long offset);
 void render_mini_board(int x, int y, int size, const char b[BOARD_SIZE][BOARD_SIZE]);
 void build_fen(char *out, size_t out_size);
@@ -318,6 +339,12 @@ static const Glyph font_glyphs[] = {
     {'[', {0x1C, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1C}},
     {']', {0x07, 0x01, 0x01, 0x01, 0x01, 0x01, 0x07}},
     {'_', {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1F}},
+    {'%', {0x18, 0x19, 0x02, 0x04, 0x08, 0x13, 0x03}},
+    // SAN punctuation: check, mate and promotion all appear in move text and
+    // were falling back to the '?' slot, which is ')' -- so Qh4+ read as QH4).
+    {'+', {0x00, 0x04, 0x04, 0x1F, 0x04, 0x04, 0x00}},
+    {'#', {0x0A, 0x1F, 0x0A, 0x0A, 0x1F, 0x0A, 0x00}},
+    {'=', {0x00, 0x00, 0x1F, 0x00, 0x1F, 0x00, 0x00}},
     {'?', {0x0E, 0x11, 0x01, 0x02, 0x04, 0x00, 0x04}},
     {'0', {0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E}},
     {'1', {0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E}},
@@ -590,6 +617,10 @@ void render_help_overlay(const BoardView *view) {
         "CATALOG (C):",
         "  UP/DOWN: SELECT ROW",
         "  /: SEARCH ALL GAMES",
+        "  [BY OPENING]: WALK THE",
+        "   OPENING TREE, THEN",
+        "   / TO FIND A PLAYER",
+        "   IN THAT LINE",
         "  [RANDOM GAME]: PLAY",
         "   THAT LIST AT RANDOM",
         "  PICK A GAME: PLAYS IT,",
@@ -706,6 +737,7 @@ static int catalog_load_entries(const char *games_dir) {
     // directories on disk — they are views over all 419,617 indexed games.
     if (catalog_dir[0] == 0) {
         push_catalog_entry_id(&entries, &count, &cap, "[ALL GAMES]", 10, -1);
+        push_catalog_entry_id(&entries, &count, &cap, "[BY OPENING]", 13, -1);
         push_catalog_entry_id(&entries, &count, &cap, "[BY PLAYER]", 4, -1);
         push_catalog_entry_id(&entries, &count, &cap, "[BY YEAR]",   6, -1);
     }
@@ -849,6 +881,60 @@ static void format_game_row(int entry_id, char *out, size_t out_size) {
 // 2,212 as the pool to continue from.
 std::vector<int> catalog_scope_ids;
 
+// Case-insensitive substring match over an entry's players and year, used to
+// narrow an existing list rather than the whole index.
+static std::vector<int> filter_games_by_query(const std::vector<int> &ids,
+                                              const char *query) {
+    std::vector<int> out;
+    if (!query || !query[0]) return out;
+    char q[64];
+    size_t qn = 0;
+    for (; query[qn] && qn + 1 < sizeof(q); qn++) q[qn] = (char)toupper((unsigned char)query[qn]);
+    q[qn] = 0;
+
+    for (size_t i = 0; i < ids.size(); i++) {
+        const IndexEntry &e = game_index.entry(ids[i]);
+        int hit = 0;
+        for (int side = 0; side < 2 && !hit; side++) {
+            const std::string &nm = game_index.name(side ? e.black_id : e.white_id);
+            if (nm.size() < qn) continue;
+            for (size_t k = 0; k + qn <= nm.size() && !hit; k++) {
+                size_t j = 0;
+                while (j < qn && (char)toupper((unsigned char)nm[k + j]) == q[j]) j++;
+                if (j == qn) hit = 1;
+            }
+        }
+        if (!hit && e.year > 0) {
+            char yb[8];
+            snprintf(yb, sizeof(yb), "%d", (int)e.year);
+            if (strstr(yb, q)) hit = 1;
+        }
+        if (hit) out.push_back(ids[i]);
+    }
+
+    // Substring matching means "TAL" also finds Talla, Atalik and Rozentalis.
+    // That is worth keeping — partial names are how you find someone whose
+    // spelling you are unsure of — but the person actually named Tal should
+    // not be buried under them, so exact matches come first.
+    std::vector<int> exact, rest;
+    exact.reserve(out.size());
+    for (size_t i = 0; i < out.size(); i++) {
+        const IndexEntry &e = game_index.entry(out[i]);
+        int is_exact = 0;
+        for (int side = 0; side < 2 && !is_exact; side++) {
+            const std::string &nm = game_index.name(side ? e.black_id : e.white_id);
+            if (nm.size() != qn) continue;
+            size_t j = 0;
+            while (j < qn && (char)toupper((unsigned char)nm[j]) == q[j]) j++;
+            if (j == qn) is_exact = 1;
+        }
+        if (is_exact) exact.push_back(out[i]);
+        else          rest.push_back(out[i]);
+    }
+    exact.insert(exact.end(), rest.begin(), rest.end());
+    return exact;
+}
+
 static int push_games(CatalogEntry **entries, int *count, int *cap,
                       const std::vector<int> &ids) {
     catalog_result_total = (int)ids.size();
@@ -930,14 +1016,53 @@ static int catalog_load_virtual(void) {
         push_games(&entries, &count, &cap, game_index.games_in_file(catalog_file_id));
         break;
     }
+    case CATVIEW_OPENING: {
+        // Rows are the moves actually played from here, most popular first, so
+        // the list reads like an opening book: pick a move, see what follows.
+        push_catalog_entry_id(&entries, &count, &cap, "[..]", 2, -1);
+        if (opening_node >= 0) {
+            const OpeningNode &here = opening_book.node(opening_node);
+            char label[128];
+            snprintf(label, sizeof(label), "[SHOW %d GAMES]", here.game_count);
+            push_catalog_entry_id(&entries, &count, &cap, label, 12, -1);
+            push_catalog_entry_id(&entries, &count, &cap, "[RANDOM GAME]", 9, -1);
+
+            std::vector<int> kids = opening_book.children(opening_node);
+            catalog_result_total = (int)kids.size();
+            for (size_t i = 0; i < kids.size(); i++) {
+                const OpeningNode &c = opening_book.node(kids[i]);
+                int pct = here.game_count > 0
+                        ? (int)((long long)c.game_count * 100 / here.game_count) : 0;
+                snprintf(label, sizeof(label), "%-7s %8d  %2d%%", c.move, c.game_count, pct);
+                if (!push_catalog_entry_id(&entries, &count, &cap, label, 11, kids[i])) break;
+            }
+            // The games of the current node are what [RANDOM GAME] draws from.
+            catalog_scope_ids = opening_book.games(opening_node);
+        }
+        break;
+    }
+    case CATVIEW_OPENING_GAMES: {
+        push_catalog_entry_id(&entries, &count, &cap, "[..]", 2, -1);
+        push_catalog_entry_id(&entries, &count, &cap, "[RANDOM GAME]", 9, -1);
+        push_games(&entries, &count, &cap, opening_book.games(opening_node));
+        break;
+    }
     case CATVIEW_SEARCH: {
         push_catalog_entry_id(&entries, &count, &cap, "[..]", 2, -1);
         if (catalog_search[0]) {
             push_catalog_entry_id(&entries, &count, &cap, "[RANDOM GAME]", 9, -1);
-            // Unlimited search so the header can report how many games really
-            // matched; push_games caps how many rows get built. Measured at
-            // ~11ms over 419,617 games, which is fine per keystroke.
-            push_games(&entries, &count, &cap, game_index.search(catalog_search, 0));
+            if (!catalog_search_base.empty()) {
+                // Searching inside a narrowed list — an opening, say — so this
+                // answers "which of these games did Tal play" rather than
+                // starting again from the whole collection.
+                push_games(&entries, &count, &cap,
+                           filter_games_by_query(catalog_search_base, catalog_search));
+            } else {
+                // Unlimited search so the header can report how many games really
+                // matched; push_games caps how many rows get built. Measured at
+                // ~11ms over 419,617 games, which is fine per keystroke.
+                push_games(&entries, &count, &cap, game_index.search(catalog_search, 0));
+            }
         }
         break;
     }
@@ -1007,6 +1132,27 @@ void catalog_select(const char *games_dir) {
         if (entry->type == 8) return;            // "Building index..." placeholder
 
         if (entry->type == 4) { catalog_set_view(CATVIEW_PLAYER_LIST); return; }
+        if (entry->type == 13) {
+            // Building the book is seconds of work on this thread, so it only
+            // happens when someone actually asks for openings.
+            if (!opening_book_ensure()) return;
+            opening_reset();
+            catalog_search_base.clear();
+            catalog_set_view(CATVIEW_OPENING);
+            return;
+        }
+        if (entry->type == 11) {
+            opening_descend(entry->index_id);
+            catalog_set_view(CATVIEW_OPENING);
+            return;
+        }
+        if (entry->type == 12) {
+            // The games that reached this position, and the pool a search
+            // typed from here narrows instead of starting over.
+            catalog_search_base = opening_book.games(opening_node);
+            catalog_set_view(CATVIEW_OPENING_GAMES);
+            return;
+        }
         if (entry->type == 6) { catalog_set_view(CATVIEW_YEAR_LIST);   return; }
         if (entry->type == 5) {
             catalog_player_id = entry->index_id;
@@ -1069,6 +1215,13 @@ void catalog_select(const char *games_dir) {
         if (entry->type == 2) {
             // In a virtual view ".." climbs back through the views rather
             // than the directory tree.
+            if (catalog_view == CATVIEW_OPENING_GAMES) { catalog_set_view(CATVIEW_OPENING); return; }
+            if (catalog_view == CATVIEW_OPENING) {
+                // Back one move, or out of the explorer once at the start.
+                if (opening_up()) { catalog_set_view(CATVIEW_OPENING); return; }
+                catalog_set_view(CATVIEW_FILES);
+                return;
+            }
             if (catalog_view == CATVIEW_PLAYER_GAMES) { catalog_set_view(CATVIEW_PLAYER_LIST); return; }
             if (catalog_view == CATVIEW_YEAR_GAMES)   { catalog_set_view(CATVIEW_YEAR_LIST);   return; }
             if (catalog_view != CATVIEW_FILES)        { catalog_set_view(CATVIEW_FILES);       return; }
@@ -1205,9 +1358,29 @@ void render_catalog_overlay(const BoardView *view) {
                  base.c_str(), catalog_result_total);
         break;
     }
+    case CATVIEW_OPENING: {
+        char line[160];
+        opening_line_text(line, sizeof(line));
+        if (line[0]) snprintf(title_buf, sizeof(title_buf), "%s (%d GAMES)",
+                              line, opening_book.node(opening_node).game_count);
+        else         snprintf(title_buf, sizeof(title_buf), "OPENINGS  (%d GAMES)",
+                              opening_book.node(opening_node).game_count);
+        break;
+    }
+    case CATVIEW_OPENING_GAMES: {
+        char line[160];
+        opening_line_text(line, sizeof(line));
+        snprintf(title_buf, sizeof(title_buf), "%s (%d GAMES)",
+                 line[0] ? line : "ALL", catalog_result_total);
+        break;
+    }
     case CATVIEW_SEARCH:
-        snprintf(title_buf, sizeof(title_buf), "SEARCH: %s_  (%d)",
-                 catalog_search, catalog_result_total);
+        if (!catalog_search_base.empty())
+            snprintf(title_buf, sizeof(title_buf), "IN THIS LINE: %s_  (%d)",
+                     catalog_search, catalog_result_total);
+        else
+            snprintf(title_buf, sizeof(title_buf), "SEARCH: %s_  (%d)",
+                     catalog_search, catalog_result_total);
         break;
     default:
         snprintf(title_buf, sizeof(title_buf), "CATALOG    / TO SEARCH");
@@ -1242,21 +1415,24 @@ void render_catalog_overlay(const BoardView *view) {
     int list_top = title_y + text_h + header_gap;
     int list_bot = footer_y - line_h;
 
-    // Thumbnails: two stacked boards with a caption each, filling the column
-    // height, then clamped so the list keeps the majority of the width.
-    int thumb_label = text_h + line_gap;
-    int thumb_gap   = vpad / 2;
-    int thumb_size  = (list_bot - list_top - thumb_label * 2 - thumb_gap) / 2;
-    int thumb_max_w = (view->screen_w - hpad * 3) * 42 / 100;
-    if (thumb_size > thumb_max_w) thumb_size = thumb_max_w;
-    thumb_size = (thumb_size / BOARD_SIZE) * BOARD_SIZE;    // whole pixels per square
     // Player and year lists have no game to preview — their rows are people and
     // dates — so they take the full width instead of holding open a column that
-    // can never be filled.
-    // FILES still counts: its rows are containers, but the column stays open so
-    // the list does not resize when stepping between a directory and a game view.
+    // can never be filled. FILES still counts: its rows are containers, but the
+    // column stays open so the list does not resize when stepping into a game view.
     int view_has_games = (catalog_view != CATVIEW_PLAYER_LIST &&
                           catalog_view != CATVIEW_YEAR_LIST);
+    // The explorer draws the one position being explored rather than a game's
+    // opening and ending, so it gets a single, larger board.
+    int single_board = (catalog_view == CATVIEW_OPENING);
+
+    int thumb_label = text_h + line_gap;
+    int thumb_gap   = vpad / 2;
+    int thumb_size  = single_board
+                    ? (list_bot - list_top - thumb_label)
+                    : (list_bot - list_top - thumb_label * 2 - thumb_gap) / 2;
+    int thumb_max_w = (view->screen_w - hpad * 3) * (single_board ? 52 : 42) / 100;
+    if (thumb_size > thumb_max_w) thumb_size = thumb_max_w;
+    thumb_size = (thumb_size / BOARD_SIZE) * BOARD_SIZE;    // whole pixels per square
     int show_thumbs = view_has_games && (thumb_size >= BOARD_SIZE * 10);
 
     int thumb_x = view->screen_w - hpad - thumb_size;
@@ -1289,7 +1465,17 @@ void render_catalog_overlay(const BoardView *view) {
         draw_text(view->screen_w - hpad - w, footer_y, scale, more, dim_color);
     }
 
-    if (show_thumbs) {
+    if (show_thumbs && single_board) {
+        // One board, showing the position the explorer currently stands on.
+        int block_h = thumb_size + thumb_label;
+        int ty = list_top + ((list_bot - list_top) - block_h) / 2;
+        if (ty < list_top) ty = list_top;
+        char cap[64];
+        snprintf(cap, sizeof(cap), "AFTER %d MOVE%s",
+                 (opening_ply + 1) / 2, (opening_ply + 1) / 2 == 1 ? "" : "S");
+        draw_text(thumb_x, ty, scale, opening_ply > 0 ? cap : "START", text_color);
+        render_mini_board(thumb_x, ty + thumb_label, thumb_size, opening_board);
+    } else if (show_thumbs) {
         int block_h = thumb_size * 2 + thumb_label * 2 + thumb_gap;
         int ty = list_top + ((list_bot - list_top) - block_h) / 2;
         if (ty < list_top) ty = list_top;
@@ -3851,6 +4037,80 @@ int opening_book_ensure(void) {
     opening_book.finish_build();
     opening_book.save(path, game_index.fingerprint_value());
     return 1;
+}
+
+// ── Opening explorer navigation ──────────────────────────────────────────────
+
+// Replay the current line from the start position. Cheaper and safer than
+// unmaking moves, at 16 plies maximum.
+static void opening_rebuild_board(void) {
+    init_board();
+    reset_castling_state();
+    int is_white = 1;
+    for (int i = 0; i < opening_ply; i++) {
+        Move m = {0};
+        if (!parse_san(opening_moves[i], is_white, &m)) break;
+        apply_move(&m, is_white);
+        is_white = !is_white;
+    }
+    memcpy(opening_board, board, sizeof(opening_board));
+}
+
+// Reset to the starting position at the root of the book.
+void opening_reset(void) {
+    opening_ply = 0;
+    opening_moves[0][0] = 0;
+    opening_node = opening_book.ready() ? opening_book.root() : -1;
+    opening_rebuild_board();
+}
+
+// Follow one continuation.
+void opening_descend(int child) {
+    if (child < 0 || opening_ply >= (int)(sizeof(opening_moves) / sizeof(opening_moves[0])) - 1) return;
+    snprintf(opening_moves[opening_ply], MOVE_TEXT_LEN, "%s", opening_book.node(child).move);
+    opening_ply++;
+    opening_node = child;
+    opening_rebuild_board();
+}
+
+// Take back the last move. Returns 0 when already at the start.
+int opening_up(void) {
+    if (opening_ply <= 0) return 0;
+    opening_ply--;
+    opening_moves[opening_ply][0] = 0;
+    // Walk down again from the root rather than remembering parents.
+    int node = opening_book.root();
+    init_board();
+    reset_castling_state();
+    int is_white = 1;
+    for (int i = 0; i < opening_ply; i++) {
+        Move m = {0};
+        if (!parse_san(opening_moves[i], is_white, &m)) break;
+        apply_move(&m, is_white);
+        is_white = !is_white;
+        node = opening_book.child_with_key(node, position_key(is_white));
+        if (node < 0) break;
+    }
+    opening_node = node;
+    memcpy(opening_board, board, sizeof(opening_board));
+    return 1;
+}
+
+// "1.e4 e5 2.f4" for the header.
+void opening_line_text(char *out, size_t out_size) {
+    if (!out || out_size == 0) return;
+    out[0] = 0;
+    size_t len = 0;
+    for (int i = 0; i < opening_ply; i++) {
+        char part[32];
+        if (i % 2 == 0) snprintf(part, sizeof(part), "%d.%s ", i / 2 + 1, opening_moves[i]);
+        else            snprintf(part, sizeof(part), "%s ", opening_moves[i]);
+        size_t pl = strlen(part);
+        if (len + pl + 1 >= out_size) break;
+        memcpy(out + len, part, pl);
+        len += pl;
+        out[len] = 0;
+    }
 }
 
 void shuffle_games(Game *games, int count) {

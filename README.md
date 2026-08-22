@@ -79,6 +79,11 @@ a per-game index of every PGN under `games/`:
   into that player's games across all files.
 - **`[BY YEAR]`** — the same, grouped by year.
 - **`/`** — search all games by player name or year as you type.
+- **`[BY OPENING]`** — walk the opening tree move by move. Each row is a move
+  actually played from the current position with how many games chose it, and
+  the board beside the list shows where you are. `[SHOW GAMES]` lists the games
+  that reached it, and `/` there searches *within that line* — which is how you
+  find, say, Tal's games in the King's Gambit.
 - **A PGN file** — opens as a folder of its games, with a `[RANDOM GAME]` row
   at the top for when you just want to watch something from it.
 
@@ -99,6 +104,11 @@ everything.
 Players are listed by surname. The source PGNs tag the same person several
 ways — `Ivanchuk,V` and `Ivanchuk, Vassily` were separate entries — so taking
 the name before the comma both merges them and keeps rows short enough to read.
+
+The opening tree is built the first time `[BY OPENING]` is opened — about five
+seconds over the whole collection, behind a progress screen — and cached to
+`games/.chess_viewer_openings`, after which it loads in a fraction of a second.
+It covers the first 16 plies, which is every named opening.
 
 The index is built in a background thread on first run (about 4.5 seconds for
 419,617 games) and cached to `games/.chess_viewer_index`, after which it loads
@@ -141,6 +151,9 @@ copy of the logic.
   ignored, absent keys keeping their current value, playback speed clamped to
   its legal range, malformed files surviving intact, and paths resolving next
   to the executable.
+- `tests/opening_test.cpp` — the opening book: prefix merging, exact game
+  membership per node, continuations ordered by popularity, the depth cap,
+  cache round-trip and rejection, corrupt caches, and an empty build.
 - `tests/index_test.cpp` — the game index: header parsing, byte offsets landing
   on real `[Event` lines, case-insensitive search, player and year grouping,
   cache round-trip and invalidation, corrupt caches, and concurrent access
